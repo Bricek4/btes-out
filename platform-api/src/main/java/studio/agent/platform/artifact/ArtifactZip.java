@@ -50,16 +50,14 @@ public final class ArtifactZip {
   }
 
   static String uniqueName(String normalized, UUID artifactId, Set<String> reserved, Set<String> used) {
-    String candidate = normalized;
-    if (reserved.contains(candidate) || used.contains(candidate)) {
-      int slash = candidate.lastIndexOf('/');
-      String parent = slash < 0 ? "" : candidate.substring(0, slash + 1);
-      String filename = slash < 0 ? candidate : candidate.substring(slash + 1);
-      candidate = parent + filename + "~" + artifactId.toString().substring(0, 8);
+    if (!reserved.contains(normalized) && used.add(normalized)) return normalized;
+    int slash = normalized.lastIndexOf('/');
+    String parent = slash < 0 ? "" : normalized.substring(0, slash + 1);
+    String filename = slash < 0 ? normalized : normalized.substring(slash + 1);
+    String base = parent + filename + "~" + artifactId.toString().replace("-", "");
+    for (int suffix = 0; ; suffix++) {
+      String candidate = suffix == 0 ? base : base + "-" + suffix;
+      if (!reserved.contains(candidate) && used.add(candidate)) return candidate;
     }
-    if (reserved.contains(candidate) || !used.add(candidate)) {
-      throw new IllegalArgumentException("artifact paths cannot be disambiguated");
-    }
-    return candidate;
   }
 }

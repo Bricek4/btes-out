@@ -39,6 +39,17 @@ class ArtifactTreeBuilderTest {
     assertEquals(2, duplicate.getFirst().children().size());
   }
 
+  @Test
+  void keepsTreeReadableWhenCanonicalFallbackIsAlsoAFolder() {
+    var id = UUID.fromString("deadbeef-0000-0000-0000-000000000000");
+    var tree = ArtifactTreeBuilder.build(List.of(entry(id, "a", "DOC"),
+        entry(UUID.randomUUID(), "a/file", "DOC"),
+        entry(UUID.randomUUID(), "a~deadbeef000000000000000000000000/file", "DOC")));
+
+    assertEquals(3, tree.size());
+    assertEquals("a~deadbeef000000000000000000000000-1", tree.get(2).name());
+  }
+
   private static ArtifactTreeBuilder.Entry entry(UUID id, String name, String kind) {
     return new ArtifactTreeBuilder.Entry(id, name, kind, 1, "text/plain", 12, "a".repeat(64));
   }

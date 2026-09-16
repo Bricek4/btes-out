@@ -5,6 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
 import java.util.zip.ZipInputStream;
 import org.junit.jupiter.api.Test;
 
@@ -31,5 +34,13 @@ class ArtifactZipTest {
     assertEquals("docs/guide.md", ArtifactZip.safeName("./docs//guide.md"));
     assertThrows(IllegalArgumentException.class,
         () -> ArtifactZip.create(java.util.Map.of("large.bin", new byte[101]), 100));
+  }
+
+  @Test
+  void deterministicallyEscapesReservedFallbackNames() {
+    var id = UUID.fromString("deadbeef-0000-0000-0000-000000000000");
+    var used = new HashSet<String>();
+    assertEquals("a~deadbeef000000000000000000000000-1",
+        ArtifactZip.uniqueName("a", id, Set.of("a", "a~deadbeef000000000000000000000000"), used));
   }
 }
