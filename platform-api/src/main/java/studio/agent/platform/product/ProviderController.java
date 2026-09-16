@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.annotation.Transactional;
@@ -168,9 +169,13 @@ public class ProviderController {
     boolean inUse = jdbc.sql("SELECT EXISTS(SELECT 1 FROM tasks WHERE provider_profile_id=:id AND model_id=:model)")
         .param("id", providerId).param("model", modelId).query(Boolean.class).single();
     if (inUse) throw new ResponseStatusException(HttpStatus.CONFLICT, "PROVIDER_MODEL_IN_USE");
-    if (jdbc.sql("DELETE FROM provider_models WHERE provider_profile_id=:id AND model_id=:model")
-        .param("id", providerId).param("model", modelId).update() != 1) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PROVIDER_MODEL_NOT_FOUND");
+    try {
+      if (jdbc.sql("DELETE FROM provider_models WHERE provider_profile_id=:id AND model_id=:model")
+          .param("id", providerId).param("model", modelId).update() != 1) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "PROVIDER_MODEL_NOT_FOUND");
+      }
+    } catch (DataIntegrityViolationException exception) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "PROVIDER_MODEL_IN_USE");
     }
   }
 
