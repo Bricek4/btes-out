@@ -86,6 +86,21 @@ class TaskWorkflowTest {
   }
 
   @Test
+  void pauseDuringApprovalIsAppliedAfterApprovalBeforeActivity() throws Exception {
+    TaskWorkflow workflow = newWorkflow("pause-approval");
+    WorkflowClient.start(workflow::run, input("pause-approval", true));
+    CompletableFuture<TaskWorkflowResult> result = WorkflowStub.fromTyped(workflow)
+        .getResultAsync(TaskWorkflowResult.class);
+    waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
+    workflow.pause();
+    assertThat(workflow.state().pauseRequested()).isTrue();
+    workflow.approve(new ApprovalDecision("approve", "ship"));
+    waitForState(workflow, TaskStatus.PAUSED);
+    workflow.resume();
+    assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
+  }
+
+  @Test
   void pauseDuringActivityWaitsForResumeBeforePublishingResult() throws Exception {
     var workflow = newWorkflow("pause-during-activity");
     activities.block = true;
@@ -100,6 +115,21 @@ class TaskWorkflowTest {
     waitForState(workflow, TaskStatus.PAUSED);
     workflow.resume();
     assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
+  }
+
+  @Test
+  void cancelDuringActivityCancelsTheScopeAndNeverPublishesTheActivityResult() throws Exception {
+    var workflow = newWorkflow("cancel-during-activity");
+    activities.block = true;
+    WorkflowClient.start(workflow::run, input("cancel-during-activity", false));
+    CompletableFuture<TaskWorkflowResult> result = WorkflowStub.fromTyped(workflow)
+        .getResultAsync(TaskWorkflowResult.class);
+    waitForState(workflow, TaskStatus.RUNNING);
+    assertThat(activities.entered.await(5, TimeUnit.SECONDS)).isTrue();
+    workflow.cancel();
+    activities.release.countDown();
+    assertThat(result.get(5, TimeUnit.SECONDS)).isEqualTo(
+        new TaskWorkflowResult("cancel-during-activity", TaskStatus.CANCELED, null, "CANCELED_BY_USER"));
   }
 
   private TaskWorkflow newWorkflow(String id) {

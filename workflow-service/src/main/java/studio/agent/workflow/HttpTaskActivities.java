@@ -1,12 +1,14 @@
 package studio.agent.workflow;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Objects;
+import io.temporal.failure.ApplicationFailure;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -49,27 +51,40 @@ public final class HttpTaskActivities implements TaskActivities {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(requestBody))
         .build();
-    HttpResponse<byte[]> response;
+    HttpResponse<InputStream> response;
     try {
-      response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+      response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
     } catch (IOException failure) {
       throw new IllegalStateException("AGENT_WORKER_UNAVAILABLE");
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException("AGENT_WORKER_INTERRUPTED");
     }
-    if (response.body() == null || response.body().length > MAX_RESPONSE_BYTES) {
-      throw new IllegalStateException("AGENT_RESPONSE_TOO_LARGE");
+    byte[] responseBody;
+    try (InputStream body = response.body()) {
+      long declaredLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+      if (declaredLength > MAX_RESPONSE_BYTES) {
+        throw ApplicationFailure.newNonRetryableFailure("AGENT_RESPONSE_TOO_LARGE", "response exceeds limit");
+      }
+      responseBody = body.readNBytes(MAX_RESPONSE_BYTES + 1);
+    } catch (IOException failure) {
+      throw new IllegalStateException("AGENT_RESPONSE_READ_FAILED");
+    }
+    if (responseBody.length > MAX_RESPONSE_BYTES) {
+      throw ApplicationFailure.newNonRetryableFailure("AGENT_RESPONSE_TOO_LARGE", "response exceeds limit");
+    }
+    if (response.statusCode() >= 400 && response.statusCode() < 500) {
+      throw ApplicationFailure.newNonRetryableFailure("AGENT_WORKER_REJECTED", "HTTP_4XX");
     }
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new IllegalStateException("AGENT_WORKER_REJECTED");
+      throw ApplicationFailure.newFailure("AGENT_WORKER_REJECTED", "HTTP_5XX");
     }
     try {
-      ActivityOutcome result = json.readValue(response.body(), ActivityOutcome.class);
+      ActivityOutcome result = json.readValue(responseBody, ActivityOutcome.class);
       if (result == null) throw new IllegalStateException("AGENT_RESULT_INVALID");
       return result;
     } catch (JacksonException failure) {
-      throw new IllegalStateException("AGENT_RESULT_INVALID");
+      throw ApplicationFailure.newNonRetryableFailure("AGENT_RESULT_INVALID", "response is not a valid outcome");
     }
   }
 

@@ -3,6 +3,9 @@ package studio.agent.workflow;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.common.RetryOptions;
 import io.temporal.failure.ActivityFailure;
+import io.temporal.failure.ApplicationFailure;
+import io.temporal.failure.CanceledFailure;
+import io.temporal.workflow.CancellationScope;
 import io.temporal.workflow.Workflow;
 import java.time.Duration;
 import studio.agent.contracts.TaskStatus;
@@ -12,6 +15,7 @@ import studio.agent.contracts.TaskStatus;
  * retryable Activity; only opaque references and validated state are retained in workflow history.
  */
 public final class TaskWorkflowImpl implements TaskWorkflow {
+  private static final Duration APPROVAL_TIMEOUT = Duration.ofHours(24);
   private final TaskActivities activities = Workflow.newActivityStub(TaskActivities.class,
       ActivityOptions.newBuilder()
           .setStartToCloseTimeout(Duration.ofMinutes(15))
@@ -25,6 +29,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
   private boolean pauseRequested;
   private boolean cancelRequested;
   private boolean activityInFlight;
+  private CancellationScope activityScope;
   private ApprovalDecision approvalDecision;
   private String taskId;
 
@@ -36,7 +41,10 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     if (input.requiresApproval()) {
       approvalPending = true;
       transition(TaskStatus.WAITING_FOR_APPROVAL);
-      Workflow.await(() -> cancelRequested || approvalDecision != null);
+      if (!Workflow.await(APPROVAL_TIMEOUT, () -> cancelRequested || approvalDecision != null)) {
+        approvalPending = false;
+        return canceled("APPROVAL_TIMEOUT");
+      }
       approvalPending = false;
       if (cancelRequested) return canceled("CANCELED_BY_USER");
       if (approvalDecision.rejected()) return canceled("APPROVAL_REJECTED");
@@ -51,20 +59,33 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     }
     if (cancelRequested) return canceled("CANCELED_BY_USER");
 
-    ActivityOutcome outcome;
+    ActivityOutcome[] outcomeHolder = new ActivityOutcome[1];
+    RuntimeException[] failureHolder = new RuntimeException[1];
     activityInFlight = true;
+    activityScope = Workflow.newCancellationScope(() -> {
+      try {
+        outcomeHolder[0] = activities.execute(input);
+      } catch (RuntimeException failure) {
+        failureHolder[0] = failure;
+      }
+    });
     try {
-      outcome = activities.execute(input);
-    } catch (ActivityFailure failure) {
+      activityScope.run();
+    } catch (CanceledFailure canceled) {
       activityInFlight = false;
-      return failed("AGENT_ACTIVITY_FAILED");
-    } catch (RuntimeException failure) {
-      activityInFlight = false;
-      return failed("AGENT_ACTIVITY_FAILED");
+      activityScope = null;
+      return canceled("CANCELED_BY_USER");
     }
     activityInFlight = false;
-
+    activityScope = null;
     if (cancelRequested) return canceled("CANCELED_BY_USER");
+    if (failureHolder[0] instanceof CanceledFailure) return canceled("CANCELED_BY_USER");
+    if (failureHolder[0] instanceof ActivityFailure failure) {
+      return failed(activityFailureCode(failure));
+    }
+    if (failureHolder[0] != null) return failed("AGENT_ACTIVITY_FAILED");
+    ActivityOutcome outcome = outcomeHolder[0];
+
     if (pauseRequested) {
       transition(TaskStatus.PAUSED);
       Workflow.await(() -> cancelRequested || !pauseRequested);
@@ -75,7 +96,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     if (outcome.status() == TaskStatus.SUCCEEDED) {
       artifactReference = outcome.artifactReference();
       transition(TaskStatus.SUCCEEDED);
-      return new TaskWorkflowResult(taskId, TaskStatus.SUCCEEDED, artifactReference, null);
+      return completed(new TaskWorkflowResult(taskId, TaskStatus.SUCCEEDED, artifactReference, null));
     }
     if (outcome.status() == TaskStatus.CANCELED) return canceled("AGENT_CANCELED");
     return failed(outcome.failureCode());
@@ -86,7 +107,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     if (status == TaskStatus.RUNNING) {
       pauseRequested = true;
       if (!activityInFlight) transition(TaskStatus.PAUSED);
-    } else if (status == TaskStatus.QUEUED) {
+    } else if (status == TaskStatus.QUEUED || status == TaskStatus.WAITING_FOR_APPROVAL) {
       pauseRequested = true;
     }
   }
@@ -101,6 +122,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
   public void cancel() {
     if (status == TaskStatus.SUCCEEDED || status == TaskStatus.FAILED || status == TaskStatus.CANCELED) return;
     cancelRequested = true;
+    if (activityScope != null) activityScope.cancel("task canceled by user");
     if (status == TaskStatus.RUNNING || status == TaskStatus.PAUSED || status == TaskStatus.WAITING_FOR_APPROVAL
         || status == TaskStatus.QUEUED) transition(TaskStatus.CANCELED);
   }
@@ -126,7 +148,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     if (status != TaskStatus.CANCELED && status != TaskStatus.SUCCEEDED && status != TaskStatus.FAILED) {
       transition(TaskStatus.CANCELED);
     }
-    return new TaskWorkflowResult(taskId, TaskStatus.CANCELED, null, failureCode);
+    return completed(new TaskWorkflowResult(taskId, TaskStatus.CANCELED, null, failureCode));
   }
 
   private TaskWorkflowResult failed(String code) {
@@ -134,12 +156,29 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     if (status != TaskStatus.FAILED && status != TaskStatus.CANCELED && status != TaskStatus.SUCCEEDED) {
       transition(TaskStatus.FAILED);
     }
-    return new TaskWorkflowResult(taskId, TaskStatus.FAILED, null, failureCode);
+    return completed(new TaskWorkflowResult(taskId, TaskStatus.FAILED, null, failureCode));
+  }
+
+  private TaskWorkflowResult completed(TaskWorkflowResult result) {
+    Workflow.await(() -> Workflow.isEveryHandlerFinished());
+    return result;
   }
 
   private void transition(TaskStatus next) {
     if (status == next) return;
     status.transitionTo(next);
     status = next;
+  }
+
+  private static String activityFailureCode(ActivityFailure failure) {
+    Throwable cause = failure;
+    while (cause != null) {
+      if (cause instanceof ApplicationFailure application) {
+        String type = application.getType();
+        if (type != null && !type.isBlank()) return type;
+      }
+      cause = cause.getCause();
+    }
+    return "AGENT_ACTIVITY_FAILED";
   }
 }

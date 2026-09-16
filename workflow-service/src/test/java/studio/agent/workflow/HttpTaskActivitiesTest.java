@@ -12,6 +12,7 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import studio.agent.contracts.TaskType;
 import tools.jackson.databind.ObjectMapper;
+import io.temporal.failure.ApplicationFailure;
 
 class HttpTaskActivitiesTest {
   @Test
@@ -57,8 +58,29 @@ class HttpTaskActivitiesTest {
           "agent-token", HttpClient.newHttpClient(), new ObjectMapper());
       assertThatThrownBy(() -> activities.execute(new WorkflowInput("task-2", "project-2", TaskType.HTML,
           "source://2", "template://2", "parameters://2", "provider://2", false)))
-          .isInstanceOf(IllegalStateException.class).hasMessage("AGENT_WORKER_REJECTED")
+          .isInstanceOf(ApplicationFailure.class).hasMessageContaining("AGENT_WORKER_REJECTED")
           .hasMessageNotContaining("provider-secret-body");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void boundsStreamingAgentResponsesBeforeTheyCanFillTheHeap() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    try {
+      server.createContext("/internal/tasks/task-3/execute", exchange -> {
+        byte[] response = new byte[1_048_577];
+        exchange.sendResponseHeaders(200, response.length);
+        exchange.getResponseBody().write(response);
+        exchange.close();
+      });
+      server.start();
+      var activities = new HttpTaskActivities(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+          "agent-token", HttpClient.newHttpClient(), new ObjectMapper());
+      assertThatThrownBy(() -> activities.execute(new WorkflowInput("task-3", "project-3", TaskType.HTML,
+          "source://3", "template://3", "parameters://3", "provider://3", false)))
+          .isInstanceOf(ApplicationFailure.class).hasMessageContaining("AGENT_RESPONSE_TOO_LARGE");
     } finally {
       server.stop(0);
     }
