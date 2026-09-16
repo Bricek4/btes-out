@@ -20,8 +20,8 @@ import org.springframework.web.bind.annotation.RestController;
 public final class BrowserSessionController {
   private final PlaywrightBrowserService service;
   public BrowserSessionController(PlaywrightBrowserService service) { this.service = service; }
-  @PostMapping public OpenSessionResult open(@RequestBody OpenRequest r) { return service.open(new OpenSessionCommand(r.taskId(), URI.create(r.baseUrl()), r.loginProfileReference())); }
-  @PostMapping("/{id}/login") public OperationResult login(@PathVariable UUID id, @RequestBody TaskRequest r) { return service.login(id, r.taskId()); }
+  @PostMapping public OpenSessionResult open(@jakarta.validation.Valid @RequestBody OpenRequest r) { return service.open(new OpenSessionCommand(r.taskId(), URI.create(r.baseUrl()), r.loginProfileReference())); }
+  @PostMapping("/{id}/login") public OperationResult login(@PathVariable UUID id, @jakarta.validation.Valid @RequestBody TaskRequest r) { return service.login(id, r.taskId()); }
   @GetMapping("/{id}/snapshot") public OperationResult snapshot(@PathVariable UUID id, @org.springframework.web.bind.annotation.RequestParam UUID taskId) { return service.snapshot(id, taskId); }
   @PostMapping("/{id}/navigate") public OperationResult navigate(@PathVariable UUID id,@RequestBody NavigateRequest r){return service.navigate(id,new NavigateCommand(r.taskId(),r.target(),r.expected()));}
   @PostMapping("/{id}/click") public OperationResult click(@PathVariable UUID id,@RequestBody LocatorRequest r){return service.click(id,new ClickCommand(r.taskId(),r.locator(),r.expected()));}

@@ -22,7 +22,7 @@ import studio.agent.browser.security.NavigationRejectedException;
 
 /** Executes only declarative, semantic browser operations; never evaluates user supplied JavaScript. */
 public final class PlaywrightBrowserService implements AutoCloseable {
-  private record RuntimeSession(BrowserContext context, Page page, List<String> trace) {}
+  private record RuntimeSession(BrowserContext context, Page page, List<String> trace, Set<String> secrets) {}
 
   private final Browser browser;
   private final NavigationPolicy policy;
@@ -39,12 +39,14 @@ public final class PlaywrightBrowserService implements AutoCloseable {
   }
 
   public OpenSessionResult open(OpenSessionCommand command) {
+    BrowserContext context = null;
     try {
       policy.validate(command.baseUrl(), null);
-      BrowserContext context = browser.newContext(new Browser.NewContextOptions()
+      context = browser.newContext(new Browser.NewContextOptions()
           .setViewportSize(limits.viewportWidth(), limits.viewportHeight())
           .setAcceptDownloads(false));
       Page page = context.newPage();
+      context.route("**/*", route -> { try { policy.validate(URI.create(route.request().url()), command.baseUrl()); route.resume(); } catch (RuntimeException rejected) { route.abort(); } });
       context.setDefaultTimeout(limits.actionTimeout().toMillis());
       context.setDefaultNavigationTimeout(limits.navigationTimeout().toMillis());
       var registrationId = new AtomicReference<UUID>();
@@ -53,9 +55,9 @@ public final class PlaywrightBrowserService implements AutoCloseable {
         if (session != null) { try { session.context().clearCookies(); } catch (RuntimeException ignored2) {} session.context().close(); }
       });
       registrationId.set(registration.id());
-      runtimes.put(registration.id(), new RuntimeSession(context, page, new ArrayList<>(List.of("SESSION_OPENED"))));
+      runtimes.put(registration.id(), new RuntimeSession(context, page, new ArrayList<>(List.of("SESSION_OPENED")), java.util.concurrent.ConcurrentHashMap.newKeySet()));
       return new OpenSessionResult(registration.id(), command.taskId(), command.loginProfileReference(), OperationStatus.SUCCEEDED, null);
-    } catch (RuntimeException exception) { return openFailure(command, exception); }
+    } catch (RuntimeException exception) { if (context != null) try { context.close(); } catch (RuntimeException ignored) {} return openFailure(command, exception); }
   }
 
   private OpenSessionResult openFailure(OpenSessionCommand c, RuntimeException e) {
@@ -67,6 +69,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
       var session = registry.require(sessionId, taskId);
       LoginCredential credential = credentials.resolve(taskId, session.profileReference());
       if (credential == null) throw new BrowserActionException("LOGIN_PROFILE_NOT_FOUND", "login profile could not be resolved");
+      runtime.secrets().add(credential.username()); runtime.secrets().add(credential.password());
       URI target = resolve(session.baseUrl(), credential.loginPath());
       navigate(runtime.page(), target, session.baseUrl());
       locator(runtime.page(), credential.usernameLocator()).fill(credential.username());
@@ -82,7 +85,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
 
   public OperationResult snapshot(UUID sessionId, UUID taskId) {
     var session = registry.require(sessionId, taskId); RuntimeSession runtime = runtime(sessionId);
-    String snapshot = redactedSnapshot(runtime.page(), Set.of());
+    String snapshot = redactedSnapshot(runtime.page(), runtime.secrets());
     return new OperationResult(OperationStatus.SUCCEEDED, runtime.page().url(), snapshot, List.copyOf(runtime.trace()), null);
   }
 
@@ -123,14 +126,14 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     try {
       for (int attempt = 1; ; attempt++) try {
         operation.run(runtime); verify(runtime.page(), expected, session.baseUrl()); runtime.trace().add(action + ":OK");
-        return new OperationResult(OperationStatus.SUCCEEDED, runtime.page().url(), redactedSnapshot(runtime.page(), Set.of()), List.copyOf(runtime.trace()), null);
+        return new OperationResult(OperationStatus.SUCCEEDED, runtime.page().url(), redactedSnapshot(runtime.page(), runtime.secrets()), List.copyOf(runtime.trace()), null);
       } catch (RuntimeException exception) {
         if (attempt >= limits.attempts()) throw exception;
         runtime.trace().add(action + ":RETRY");
       }
     } catch (RuntimeException exception) {
       runtime.trace().add(action + ":FAILED:" + error(exception).code());
-      return new OperationResult(OperationStatus.FAILED, runtime.page().url(), redactedSnapshot(runtime.page(), Set.of()), List.copyOf(runtime.trace()), error(exception));
+      return new OperationResult(OperationStatus.FAILED, runtime.page().url(), redactedSnapshot(runtime.page(), runtime.secrets()), List.copyOf(runtime.trace()), error(exception));
     }
   }
   private RuntimeSession runtime(UUID id) { RuntimeSession value = runtimes.get(id); if (value == null) throw new SessionAccessException("SESSION_NOT_FOUND"); return value; }

@@ -34,8 +34,6 @@ record ScreenshotResult(String markerId, String profileReference, String reached
 
 record LoginCredential(String loginPath, String username, String password, LocatorSpec usernameLocator,
                        LocatorSpec passwordLocator, LocatorSpec submitLocator, ExpectedState expected) {}
-record BrowserLimits(Duration actionTimeout, Duration navigationTimeout, int attempts, int viewportWidth,
-                     int viewportHeight, long maxScreenshotBytes, long maxDownloadBytes) {}
 record PublishedArtifact(String reference, byte[] bytes, String sha256) {}
 
 @FunctionalInterface
