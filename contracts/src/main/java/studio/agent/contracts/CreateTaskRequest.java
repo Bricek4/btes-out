@@ -8,11 +8,16 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-/** Public task request; Platform API validates parameters against the immutable template-version schema. */
+/**
+ * Public task request. Platform API validates parameters against the immutable template-version
+ * schema and confirms that a selected provider profile belongs to the caller.
+ */
 public record CreateTaskRequest(UUID projectId, TaskType type, UUID templateVersionId,
-                                Map<String, JsonNode> parameters) {
+                                Map<String, JsonNode> parameters, UUID providerProfileId,
+                                String modelId) {
   public static final int MAX_PARAMETER_PROPERTIES = 100;
   public static final int MAX_PARAMETERS_SERIALIZED_BYTES = 64 * 1024;
+  public static final int MAX_MODEL_ID_LENGTH = 255;
   private static final ObjectMapper JSON = new ObjectMapper();
 
   public CreateTaskRequest {
@@ -30,6 +35,15 @@ public record CreateTaskRequest(UUID projectId, TaskType type, UUID templateVers
     parameters = copyParameters(parameters);
     if (serializedSize(parameters) > MAX_PARAMETERS_SERIALIZED_BYTES) {
       throw new IllegalArgumentException("parameters must not exceed " + MAX_PARAMETERS_SERIALIZED_BYTES + " serialized bytes");
+    }
+    if ((providerProfileId == null) != (modelId == null)) {
+      throw new IllegalArgumentException("providerProfileId and modelId must be supplied together");
+    }
+    if (modelId != null) {
+      requireText(modelId, "modelId");
+      if (modelId.length() > MAX_MODEL_ID_LENGTH) {
+        throw new IllegalArgumentException("modelId must not exceed " + MAX_MODEL_ID_LENGTH + " characters");
+      }
     }
   }
 

@@ -40,4 +40,6 @@ The stable HTTP and SSE task contract is at
 and cancellation require an `Idempotency-Key`; a repeated create request returns the previously
 accepted task. Create requests select an immutable template version and provide at most 100 JSON
 parameters (at most 64 KiB serialized), which Platform API validates against that template's schema.
+An optional provider-profile/model pair selects a model for a single task; omitting both uses the
+user's personal default. Platform API verifies provider-profile ownership.
 Never commit credentials or `.env` files.

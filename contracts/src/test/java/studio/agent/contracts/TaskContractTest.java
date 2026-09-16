@@ -20,7 +20,7 @@ class TaskContractTest {
   void accepts_a_public_task_request_with_immutable_template_version_and_bounded_parameters() {
     var templateVersionId = UUID.randomUUID();
     var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, templateVersionId,
-        Map.of("audience", JsonNodeFactory.instance.stringNode("maintainers")));
+        Map.of("audience", JsonNodeFactory.instance.stringNode("maintainers")), null, null);
 
     assertEquals(TaskStatus.QUEUED, request.initialStatus());
     assertEquals(templateVersionId, request.templateVersionId());
@@ -31,7 +31,7 @@ class TaskContractTest {
   void task_request_deep_copies_parameters_on_input_and_access() {
     var original = JsonNodeFactory.instance.objectNode().put("title", "before");
     var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-        Map.of("context", original));
+        Map.of("context", original), null, null);
     original.put("title", "caller changed it");
 
     assertEquals("before", request.parameters().get("context").get("title").asText());
@@ -41,7 +41,7 @@ class TaskContractTest {
 
   @Test
   void exposes_only_the_allowed_public_and_worker_record_components() {
-    assertEquals(List.of("projectId", "type", "templateVersionId", "parameters"),
+    assertEquals(List.of("projectId", "type", "templateVersionId", "parameters", "providerProfileId", "modelId"),
         java.util.Arrays.stream(CreateTaskRequest.class.getRecordComponents()).map(component -> component.getName()).toList());
     assertEquals(List.of("taskId", "projectId", "type", "sourceReference", "templateVersionReference",
             "parametersReference", "providerProfileReference"),
@@ -50,7 +50,7 @@ class TaskContractTest {
 
   @Test
   void keeps_idempotency_out_of_the_public_request_and_validates_the_internal_command() {
-    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.USER_GUIDE, UUID.randomUUID(), Map.of());
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.USER_GUIDE, UUID.randomUUID(), Map.of(), null, null);
     var command = new CreateTaskCommand(request, "dedupe-123");
 
     assertEquals("dedupe-123", command.idempotencyKey());
@@ -62,7 +62,7 @@ class TaskContractTest {
 
   @Test
   void rejects_idempotency_keys_longer_than_255_characters() {
-    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.HTML, UUID.randomUUID(), Map.of());
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.HTML, UUID.randomUUID(), Map.of(), null, null);
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskCommand(request, "a".repeat(256)));
     assertEquals(255, new CreateTaskCommand(request, "a".repeat(255)).idempotencyKey().length());
@@ -72,28 +72,56 @@ class TaskContractTest {
   void rejects_missing_required_task_request_inputs() {
     var projectId = UUID.randomUUID();
     assertThrows(NullPointerException.class,
-        () -> new CreateTaskRequest(null, TaskType.PROJECT_DOCS, UUID.randomUUID(), Map.of()));
+        () -> new CreateTaskRequest(null, TaskType.PROJECT_DOCS, UUID.randomUUID(), Map.of(), null, null));
     assertThrows(NullPointerException.class,
-        () -> new CreateTaskRequest(projectId, null, UUID.randomUUID(), Map.of()));
+        () -> new CreateTaskRequest(projectId, null, UUID.randomUUID(), Map.of(), null, null));
     assertThrows(NullPointerException.class,
-        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, null, Map.of()));
+        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, null, Map.of(), null, null));
     assertThrows(IllegalArgumentException.class,
-        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, UUID.randomUUID(), null));
+        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, UUID.randomUUID(), null, null, null));
   }
 
   @Test
   void rejects_parameters_above_the_property_or_serialized_size_limit() {
     var parameters = new LinkedHashMap<String, JsonNode>();
     for (int index = 0; index < 100; index++) parameters.put("field" + index, JsonNodeFactory.instance.stringNode("value"));
-    assertEquals(100, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters).parameters().size());
+    assertEquals(100, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters, null, null).parameters().size());
     parameters.put("field100", JsonNodeFactory.instance.stringNode("value"));
     assertThrows(IllegalArgumentException.class,
-        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters));
+        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters, null, null));
     assertEquals(65_536, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-        Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_525)))).parametersSerializedSize());
+        Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_525))), null, null).parametersSerializedSize());
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-            Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_526)))));
+            Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_526))), null, null));
+  }
+
+  @Test
+  void uses_the_personal_default_when_provider_and_model_are_both_omitted() {
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), Map.of(), null, null);
+    assertEquals(null, request.providerProfileId());
+    assertEquals(null, request.modelId());
+  }
+
+  @Test
+  void requires_provider_and_model_together_and_bounds_model_id() {
+    var projectId = UUID.randomUUID();
+    var templateVersionId = UUID.randomUUID();
+    var providerProfileId = UUID.randomUUID();
+    var selected = new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId, "model-v1");
+
+    assertEquals(providerProfileId, selected.providerProfileId());
+    assertEquals("model-v1", selected.modelId());
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId, null));
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), null, "model-v1"));
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId, " "));
+    assertEquals(255, new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId,
+        "m".repeat(255)).modelId().length());
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId, "m".repeat(256)));
   }
 
   @Test

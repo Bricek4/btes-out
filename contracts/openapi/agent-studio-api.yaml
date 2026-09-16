@@ -58,6 +58,9 @@ components:
     CreateTaskRequest:
       type: object
       required: [projectId, type, templateVersionId, parameters]
+      dependentRequired:
+        providerProfileId: [modelId]
+        modelId: [providerProfileId]
       properties:
         projectId: { type: string, format: uuid }
         type: { $ref: '#/components/schemas/TaskType' }
@@ -70,6 +73,15 @@ components:
           maxProperties: 100
           description: Parameter values validated against the selected template-version schema; serialized parameters must not exceed 65536 bytes.
           additionalProperties: true
+        providerProfileId:
+          type: string
+          format: uuid
+          description: Optional caller-owned provider profile. Omit with modelId to use the caller's personal default.
+        modelId:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional model identifier, supplied only with providerProfileId.
     TaskSnapshot:
       type: object
       required: [taskId, projectId, type, status, createdAt, updatedAt]
