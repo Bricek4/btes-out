@@ -54,7 +54,7 @@ components:
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
   schemas:
     TaskType: { type: string, enum: [PROJECT_DOCS, USER_GUIDE, HTML, SCREENSHOT] }
-    TaskStatus: { type: string, enum: [QUEUED, RUNNING, WAITING_FOR_APPROVAL, SUCCEEDED, FAILED, CANCELED] }
+    TaskStatus: { type: string, enum: [QUEUED, RUNNING, PAUSED, WAITING_FOR_APPROVAL, SUCCEEDED, FAILED, CANCELED] }
     CreateTaskRequest:
       type: object
       required: [projectId, type, templateVersionId, parameters]

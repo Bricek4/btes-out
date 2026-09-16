@@ -137,8 +137,9 @@ class TaskContractTest {
   void enforces_the_complete_task_status_transition_matrix() {
     Map<TaskStatus, EnumSet<TaskStatus>> allowed = Map.of(
         TaskStatus.QUEUED, EnumSet.of(TaskStatus.RUNNING, TaskStatus.CANCELED),
-        TaskStatus.RUNNING, EnumSet.of(TaskStatus.WAITING_FOR_APPROVAL, TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED),
-        TaskStatus.WAITING_FOR_APPROVAL, EnumSet.of(TaskStatus.QUEUED, TaskStatus.SUCCEEDED, TaskStatus.CANCELED),
+        TaskStatus.RUNNING, EnumSet.of(TaskStatus.PAUSED, TaskStatus.WAITING_FOR_APPROVAL, TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED),
+        TaskStatus.PAUSED, EnumSet.of(TaskStatus.RUNNING, TaskStatus.CANCELED),
+        TaskStatus.WAITING_FOR_APPROVAL, EnumSet.of(TaskStatus.RUNNING, TaskStatus.CANCELED),
         TaskStatus.SUCCEEDED, EnumSet.noneOf(TaskStatus.class),
         TaskStatus.FAILED, EnumSet.noneOf(TaskStatus.class),
         TaskStatus.CANCELED, EnumSet.noneOf(TaskStatus.class));
