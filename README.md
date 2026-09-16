@@ -38,4 +38,6 @@ required:
 The stable HTTP and SSE task contract is at
 [`contracts/openapi/agent-studio-api.yaml`](contracts/openapi/agent-studio-api.yaml). Task creation
 and cancellation require an `Idempotency-Key`; a repeated create request returns the previously
-accepted task. Never commit credentials or `.env` files.
+accepted task. Create requests select an immutable template version and provide at most 100 JSON
+parameters (at most 64 KiB serialized), which Platform API validates against that template's schema.
+Never commit credentials or `.env` files.

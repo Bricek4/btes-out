@@ -53,15 +53,23 @@ components:
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
   schemas:
-    TaskType: { type: string, enum: [DOCUMENTATION, SCREENSHOT] }
+    TaskType: { type: string, enum: [PROJECT_DOCS, USER_GUIDE, HTML, SCREENSHOT] }
     TaskStatus: { type: string, enum: [QUEUED, RUNNING, WAITING_FOR_APPROVAL, SUCCEEDED, FAILED, CANCELED] }
     CreateTaskRequest:
       type: object
-      required: [projectId, type, inputReference]
+      required: [projectId, type, templateVersionId, parameters]
       properties:
         projectId: { type: string, format: uuid }
         type: { $ref: '#/components/schemas/TaskType' }
-        inputReference: { type: string, minLength: 1, description: Opaque source or configuration reference. }
+        templateVersionId:
+          type: string
+          format: uuid
+          description: Immutable template version selected for this task.
+        parameters:
+          type: object
+          maxProperties: 100
+          description: Parameter values validated against the selected template-version schema; serialized parameters must not exceed 65536 bytes.
+          additionalProperties: true
     TaskSnapshot:
       type: object
       required: [taskId, projectId, type, status, createdAt, updatedAt]

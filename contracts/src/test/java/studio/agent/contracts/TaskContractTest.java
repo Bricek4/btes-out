@@ -6,42 +6,64 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import com.fasterxml.jackson.databind.node.TextNode;
 import org.junit.jupiter.api.Test;
 
 class TaskContractTest {
   @Test
-  void accepts_a_valid_idempotent_task_request() {
-    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.DOCUMENTATION, "dedupe-123", "source://project-42");
+  void accepts_a_public_task_request_with_immutable_template_version_and_bounded_parameters() {
+    var templateVersionId = UUID.randomUUID();
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, templateVersionId,
+        Map.of("audience", TextNode.valueOf("maintainers")));
 
     assertEquals(TaskStatus.QUEUED, request.initialStatus());
-    assertEquals("dedupe-123", request.idempotencyKey());
+    assertEquals(templateVersionId, request.templateVersionId());
+    assertEquals("maintainers", request.parameters().get("audience").asText());
   }
 
   @Test
-  void rejects_blank_idempotency_key() {
+  void keeps_idempotency_out_of_the_public_request_and_validates_the_internal_command() {
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.USER_GUIDE, UUID.randomUUID(), Map.of());
+    var command = new CreateTaskCommand(request, "dedupe-123");
+
+    assertEquals("dedupe-123", command.idempotencyKey());
+    assertTrue(java.util.Arrays.stream(CreateTaskRequest.class.getRecordComponents())
+        .noneMatch(component -> component.getName().equals("idempotencyKey")));
     assertThrows(IllegalArgumentException.class,
-        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.DOCUMENTATION, " ", "source://project-42"));
+        () -> new CreateTaskCommand(request, " "));
   }
 
   @Test
   void rejects_idempotency_keys_longer_than_255_characters() {
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.HTML, UUID.randomUUID(), Map.of());
     assertThrows(IllegalArgumentException.class,
-        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.DOCUMENTATION, "a".repeat(256), "source://project-42"));
-    assertEquals(255, new CreateTaskRequest(UUID.randomUUID(), TaskType.DOCUMENTATION,
-        "a".repeat(255), "source://project-42").idempotencyKey().length());
+        () -> new CreateTaskCommand(request, "a".repeat(256)));
+    assertEquals(255, new CreateTaskCommand(request, "a".repeat(255)).idempotencyKey().length());
   }
 
   @Test
   void rejects_missing_required_task_request_inputs() {
     var projectId = UUID.randomUUID();
     assertThrows(NullPointerException.class,
-        () -> new CreateTaskRequest(null, TaskType.DOCUMENTATION, "key", "source://project"));
+        () -> new CreateTaskRequest(null, TaskType.PROJECT_DOCS, UUID.randomUUID(), Map.of()));
     assertThrows(NullPointerException.class,
-        () -> new CreateTaskRequest(projectId, null, "key", "source://project"));
+        () -> new CreateTaskRequest(projectId, null, UUID.randomUUID(), Map.of()));
     assertThrows(IllegalArgumentException.class,
-        () -> new CreateTaskRequest(projectId, TaskType.DOCUMENTATION, "key", " "));
+        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, UUID.randomUUID(), null));
+  }
+
+  @Test
+  void rejects_parameters_above_the_property_or_serialized_size_limit() {
+    var parameters = new LinkedHashMap<String, com.fasterxml.jackson.databind.JsonNode>();
+    for (int index = 0; index < 101; index++) parameters.put("field" + index, TextNode.valueOf("value"));
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters));
+    assertThrows(IllegalArgumentException.class,
+        () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
+            Map.of("body", TextNode.valueOf("x".repeat(65_536)))));
   }
 
   @Test
@@ -69,14 +91,19 @@ class TaskContractTest {
   void worker_request_validates_required_references_and_preserves_task_correlation() {
     var taskId = UUID.randomUUID();
     var projectId = UUID.randomUUID();
-    var request = new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, "source://app");
+    var request = new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, "source://app",
+        "template-version://v1", "parameters://task-input", "provider-profile://default");
 
     assertEquals(taskId, request.taskId());
     assertEquals(projectId, request.projectId());
-    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(null, projectId, TaskType.SCREENSHOT, "source://app"));
-    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(taskId, null, TaskType.SCREENSHOT, "source://app"));
-    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(taskId, projectId, null, "source://app"));
-    assertThrows(IllegalArgumentException.class, () -> new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, " "));
+    assertEquals("template-version://v1", request.templateVersionReference());
+    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(null, projectId, TaskType.SCREENSHOT, "source://app", "template://v1", "parameters://task", "provider://default"));
+    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(taskId, null, TaskType.SCREENSHOT, "source://app", "template://v1", "parameters://task", "provider://default"));
+    assertThrows(NullPointerException.class, () -> new WorkerTaskRequest(taskId, projectId, null, "source://app", "template://v1", "parameters://task", "provider://default"));
+    assertThrows(IllegalArgumentException.class, () -> new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, " ", "template://v1", "parameters://task", "provider://default"));
+    assertThrows(IllegalArgumentException.class, () -> new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, "source://app", " ", "parameters://task", "provider://default"));
+    assertThrows(IllegalArgumentException.class, () -> new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, "source://app", "template://v1", " ", "provider://default"));
+    assertThrows(IllegalArgumentException.class, () -> new WorkerTaskRequest(taskId, projectId, TaskType.SCREENSHOT, "source://app", "template://v1", "parameters://task", " "));
   }
 
   @Test
@@ -100,7 +127,7 @@ class TaskContractTest {
 
   @Test
   void public_task_snapshot_does_not_contain_an_idempotency_key() {
-    var snapshot = new TaskSnapshot(UUID.randomUUID(), UUID.randomUUID(), TaskType.DOCUMENTATION,
+    var snapshot = new TaskSnapshot(UUID.randomUUID(), UUID.randomUUID(), TaskType.PROJECT_DOCS,
         TaskStatus.QUEUED, Instant.now(), Instant.now(), null, null);
 
     assertTrue(java.util.Arrays.stream(TaskSnapshot.class.getRecordComponents())

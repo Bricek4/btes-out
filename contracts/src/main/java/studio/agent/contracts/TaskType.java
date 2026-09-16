@@ -1,6 +1,8 @@
 package studio.agent.contracts;
 
 public enum TaskType {
-  DOCUMENTATION,
+  PROJECT_DOCS,
+  USER_GUIDE,
+  HTML,
   SCREENSHOT
 }
