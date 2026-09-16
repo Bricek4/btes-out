@@ -101,6 +101,22 @@ class TaskWorkflowTest {
   }
 
   @Test
+  void activityMarkerAmbiguityCreatesTypedApprovalAndRetriesAfterApproval() throws Exception {
+    var workflow = newWorkflow("runtime-approval");
+    activities.approvalOnFirst = true;
+    WorkflowClient.start(workflow::run, input("runtime-approval", false));
+    CompletableFuture<TaskWorkflowResult> result = WorkflowStub.fromTyped(workflow)
+        .getResultAsync(TaskWorkflowResult.class);
+    waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
+    assertThat(workflow.state().approvalRequest()).isEqualTo(new TaskApprovalRequest(
+        "SCREENSHOT_ROUTE_AMBIGUITY", "users", "ROUTE_EVIDENCE_INSUFFICIENT", "approval://screenshot-route/users"));
+    workflow.approve(new ApprovalDecision("approve", "confirmed"));
+    assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
+    assertThat(activities.calls).isEqualTo(2);
+    assertThat(activities.lastApprovedReference).isEqualTo("approval://screenshot-route/users");
+  }
+
+  @Test
   void pauseDuringActivityWaitsForResumeBeforePublishingResult() throws Exception {
     var workflow = newWorkflow("pause-during-activity");
     activities.block = true;
@@ -157,11 +173,21 @@ class TaskWorkflowTest {
 
   static final class DeterministicActivities implements TaskActivities {
     private volatile boolean block;
+    private volatile boolean approvalOnFirst;
+    private int calls;
+    private String lastApprovedReference;
     private final CountDownLatch entered = new CountDownLatch(1);
     private final CountDownLatch release = new CountDownLatch(1);
 
     @Override
     public ActivityOutcome execute(WorkflowInput input) {
+      calls++;
+      lastApprovedReference = input.approvedReference();
+      if (approvalOnFirst && calls == 1) {
+        return new ActivityOutcome(TaskStatus.WAITING_FOR_APPROVAL, null, null,
+        new TaskApprovalRequest("SCREENSHOT_ROUTE_AMBIGUITY", "users",
+                "ROUTE_EVIDENCE_INSUFFICIENT", "approval://screenshot-route/users"));
+      }
       if (block) {
         entered.countDown();
         try {

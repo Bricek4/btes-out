@@ -85,4 +85,29 @@ class HttpTaskActivitiesTest {
       server.stop(0);
     }
   }
+
+  @Test
+  void preservesTypedApprovalPayloadFromAgentWithoutTurningItIntoSuccess() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    try {
+      server.createContext("/internal/tasks/task-4/execute", exchange -> {
+        byte[] response = ("{\"status\":\"WAITING_FOR_APPROVAL\",\"artifactReference\":null,"
+            + "\"failureCode\":null,\"approval\":{\"type\":\"SCREENSHOT_ROUTE_AMBIGUITY\","
+            + "\"markerId\":\"users\",\"reasonCode\":\"ROUTE_EVIDENCE_INSUFFICIENT\","
+            + "\"reference\":\"approval://users\"}}" ).getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(200, response.length);
+        exchange.getResponseBody().write(response);
+        exchange.close();
+      });
+      server.start();
+      var activities = new HttpTaskActivities(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+          "agent-token", HttpClient.newHttpClient(), new ObjectMapper());
+      var outcome = activities.execute(new WorkflowInput("task-4", "project-4", TaskType.SCREENSHOT,
+          "source://4", "template://4", "parameters://4", "provider://4", false));
+      assertThat(outcome.status()).isEqualTo(studio.agent.contracts.TaskStatus.WAITING_FOR_APPROVAL);
+      assertThat(outcome.approval().reference()).isEqualTo("approval://users");
+    } finally {
+      server.stop(0);
+    }
+  }
 }

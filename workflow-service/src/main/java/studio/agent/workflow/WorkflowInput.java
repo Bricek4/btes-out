@@ -15,7 +15,15 @@ public record WorkflowInput(
     String templateVersionReference,
     String parametersReference,
     String providerProfileReference,
-    boolean requiresApproval) {
+    boolean requiresApproval,
+    String approvedReference) {
+
+  public WorkflowInput(String taskId, String projectId, TaskType type, String sourceReference,
+      String templateVersionReference, String parametersReference, String providerProfileReference,
+      boolean requiresApproval) {
+    this(taskId, projectId, type, sourceReference, templateVersionReference, parametersReference,
+        providerProfileReference, requiresApproval, null);
+  }
 
   public WorkflowInput {
     requirePathSegment(taskId, "taskId");
@@ -25,6 +33,15 @@ public record WorkflowInput(
     requireText(templateVersionReference, "templateVersionReference");
     requireText(parametersReference, "parametersReference");
     requireText(providerProfileReference, "providerProfileReference");
+    if (approvedReference != null && (approvedReference.isBlank() || approvedReference.length() > 2_048
+        || !approvedReference.startsWith("approval://screenshot-route/"))) {
+      throw new IllegalArgumentException("approvedReference is invalid");
+    }
+  }
+
+  public WorkflowInput withApprovedReference(String reference) {
+    return new WorkflowInput(taskId, projectId, type, sourceReference, templateVersionReference,
+        parametersReference, providerProfileReference, requiresApproval, reference);
   }
 
   private static void requireText(String value, String field) {
