@@ -80,6 +80,7 @@ components:
         modelId:
           type: string
           minLength: 1
+          pattern: '.*\S.*'
           maxLength: 255
           description: Optional model identifier, supplied only with providerProfileId.
     TaskSnapshot:

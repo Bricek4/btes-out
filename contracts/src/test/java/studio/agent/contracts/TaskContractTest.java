@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -122,6 +124,13 @@ class TaskContractTest {
         "m".repeat(255)).modelId().length());
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(projectId, TaskType.HTML, templateVersionId, Map.of(), providerProfileId, "m".repeat(256)));
+  }
+
+  @Test
+  void openapi_model_id_rejects_whitespace_only_values() throws Exception {
+    var specification = Files.readString(Path.of("openapi", "agent-studio-api.yaml"));
+
+    assertTrue(specification.contains("pattern: '.*\\S.*'"));
   }
 
   @Test
