@@ -74,7 +74,7 @@ stop_service() {
     done
     kill -9 "$pid" 2>/dev/null || true
   fi
-  rm -f "$PID_DIR/$service.pid"
+  unlink "$PID_DIR/$service.pid" 2>/dev/null || true
   echo "stopped $service"
 }
 
