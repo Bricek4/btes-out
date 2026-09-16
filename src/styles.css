@@ -43,14 +43,15 @@ button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .sidebar { position: sticky; top: 16px; width: 252px; height: calc(100vh - 32px); flex: 0 0 252px; display: flex; flex-direction: column; padding: 18px 14px 14px; border: 1px solid rgba(255,255,255,.8); border-radius: 26px; background: rgba(255,255,255,.76); box-shadow: var(--shadow-sm); backdrop-filter: blur(22px) saturate(140%); transition: width .24s ease, flex-basis .24s ease; }
 .sidebar--collapsed { width: 78px; flex-basis: 78px; padding-inline: 12px; }
 .sidebar__brand { display: flex; align-items: center; gap: 11px; min-height: 44px; padding: 0 7px; }
-.brand-mark { position: relative; width: 34px; height: 34px; display: inline-flex; flex: 0 0 34px; align-items: center; justify-content: center; overflow: hidden; color: #fff; border-radius: 12px; background: linear-gradient(145deg,#8073f6,#4e43cb); box-shadow: 0 10px 23px rgba(90,75,215,.28); }
-.brand-mark::after { content: ''; position: absolute; top: -12px; right: -10px; width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,.32); }
+.brand-mark { width: 36px; height: 36px; display: inline-flex; flex: 0 0 36px; align-items: center; justify-content: center; color: #f7f6ff; border: 1px solid rgba(255,255,255,.16); border-radius: 11px; background: linear-gradient(150deg,#38334f,#211e34); box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 4px 10px rgba(33,30,52,.14); }
+.brand-mark__glyph { width: 27px; height: 27px; flex: 0 0 27px; }
+.brand-mark__bridge { color: #c7bfff; }
 .brand-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.15; }
 .brand-copy strong { font-size: 14px; letter-spacing: -.02em; }
 .brand-copy span { color: #9694a7; font-size: 9px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; }
 .sidebar__toggle { margin-left: auto; }
 .sidebar--collapsed .sidebar__brand { justify-content: center; padding: 0; }
-.sidebar--collapsed .sidebar__toggle { position: absolute; top: 27px; left: 57px; width: 28px; opacity: 0; background: #fff; box-shadow: var(--shadow-sm); }
+.sidebar--collapsed .sidebar__toggle { position: absolute; top: 27px; left: 64px; width: 26px; opacity: 0; background: #fff; box-shadow: var(--shadow-sm); }
 .sidebar--collapsed:hover .sidebar__toggle { opacity: 1; }
 .sidebar__eyebrow { margin: 32px 12px 9px; color: #aaa9b7; font-size: 9px; font-weight: 800; letter-spacing: .16em; }
 .sidebar__eyebrow--library { margin-top: 26px; }

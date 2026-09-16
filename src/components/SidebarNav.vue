@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BrandMark from './BrandMark.vue'
 import {
   Activity,
   Blocks,
@@ -32,7 +33,7 @@ const library = [
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
     <div class="sidebar__brand">
-      <div class="brand-mark"><Sparkles :size="17" :stroke-width="2.4" /></div>
+      <BrandMark />
       <div v-if="!collapsed" class="brand-copy">
         <strong>Agent Studio</strong>
         <span>workflow workspace</span>
