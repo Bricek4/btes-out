@@ -15,9 +15,9 @@ import studio.agent.contracts.WorkerTaskRequest;
 @RestController
 @RequestMapping("/internal/tasks")
 public final class AgentTaskExecutionController {
-  private final WorkerExecutionService execution;
+  private final WorkerTaskExecutor execution;
 
-  public AgentTaskExecutionController(WorkerExecutionService execution) {
+  public AgentTaskExecutionController(WorkerTaskExecutor execution) {
     this.execution = Objects.requireNonNull(execution, "execution service is required");
   }
 
@@ -25,18 +25,26 @@ public final class AgentTaskExecutionController {
   ActivityOutcome execute(@PathVariable String taskId, @RequestBody WorkflowInput input) {
     Objects.requireNonNull(input, "workflow input is required");
     if (!input.taskId().equals(taskId)) throw new IllegalArgumentException("path taskId does not match workflow input");
-    WorkerExecutionService.LocalWorkerResult local = execution.execute(input.workerRequest());
+    WorkerExecutionService.LocalWorkerResult local = execution.execute(input.workerRequest(), input.approvedReference());
     if (local.completion() == null) {
-      return new ActivityOutcome(TaskStatus.FAILED, null,
-          local.approvalReference() == null ? "AGENT_RESULT_INVALID" : "SCREENSHOT_APPROVAL_REQUIRED");
+      if (local.approvalRequest() != null) {
+        return new ActivityOutcome(TaskStatus.WAITING_FOR_APPROVAL, null, null, local.approvalRequest());
+      }
+      return new ActivityOutcome(TaskStatus.FAILED, null, "AGENT_RESULT_INVALID", null);
     }
     return new ActivityOutcome(local.completion().status(), local.completion().resultReference(),
-        local.completion().failureCode());
+        local.completion().failureCode(), null);
   }
 
   public record WorkflowInput(String taskId, String projectId, TaskType type, String sourceReference,
       String templateVersionReference, String parametersReference, String providerProfileReference,
-      boolean requiresApproval) {
+      boolean requiresApproval, String approvedReference) {
+    public WorkflowInput(String taskId, String projectId, TaskType type, String sourceReference,
+        String templateVersionReference, String parametersReference, String providerProfileReference,
+        boolean requiresApproval) {
+      this(taskId, projectId, type, sourceReference, templateVersionReference, parametersReference,
+          providerProfileReference, requiresApproval, null);
+    }
     public WorkflowInput {
       requireText(taskId, "taskId");
       requireText(projectId, "projectId");
@@ -45,6 +53,10 @@ public final class AgentTaskExecutionController {
       requireText(templateVersionReference, "templateVersionReference");
       requireText(parametersReference, "parametersReference");
       requireText(providerProfileReference, "providerProfileReference");
+      if (approvedReference != null && (approvedReference.isBlank() || approvedReference.length() > 2_048
+          || !approvedReference.startsWith("approval://screenshot-route/"))) {
+        throw new IllegalArgumentException("approvedReference is invalid");
+      }
     }
     WorkerTaskRequest workerRequest() {
       try {
@@ -56,11 +68,14 @@ public final class AgentTaskExecutionController {
     }
   }
 
-  public record ActivityOutcome(TaskStatus status, String artifactReference, String failureCode) {
+  @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+  public record ActivityOutcome(TaskStatus status, String artifactReference, String failureCode,
+                                WorkerExecutionService.ApprovalBridge approval) {
     public ActivityOutcome {
       Objects.requireNonNull(status, "status is required");
-      if (status != TaskStatus.SUCCEEDED && status != TaskStatus.FAILED && status != TaskStatus.CANCELED) {
-        throw new IllegalArgumentException("activity outcome must be terminal");
+      if (status != TaskStatus.SUCCEEDED && status != TaskStatus.FAILED && status != TaskStatus.CANCELED
+          && status != TaskStatus.WAITING_FOR_APPROVAL) {
+        throw new IllegalArgumentException("activity outcome status is invalid");
       }
       if (status == TaskStatus.SUCCEEDED && (artifactReference == null || artifactReference.isBlank() || failureCode != null)) {
         throw new IllegalArgumentException("successful activity must contain only an artifact reference");
@@ -70,6 +85,13 @@ public final class AgentTaskExecutionController {
       }
       if (status == TaskStatus.CANCELED && (artifactReference != null || failureCode != null)) {
         throw new IllegalArgumentException("canceled activity cannot contain result details");
+      }
+      if (status == TaskStatus.WAITING_FOR_APPROVAL
+          && (approval == null || artifactReference != null || failureCode != null)) {
+        throw new IllegalArgumentException("approval outcome must contain only the approval bridge");
+      }
+      if (approval != null && status != TaskStatus.WAITING_FOR_APPROVAL) {
+        throw new IllegalArgumentException("approval bridge requires the waiting status");
       }
     }
   }

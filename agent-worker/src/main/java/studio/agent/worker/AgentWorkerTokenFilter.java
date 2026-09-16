@@ -58,4 +58,16 @@ class AgentWorkerSecurityConfiguration {
     registration.setOrder(-100);
     return registration;
   }
+  @Bean AgentPlatformClient agentPlatformClient(@Value("${PLATFORM_API_URL}") String baseUrl,
+      @Value("${AGENT_WORKER_TOKEN}") String token) {
+    return new AgentPlatformClient(baseUrl, token);
+  }
+  @Bean BrowserWorkerClient browserWorkerClient(@Value("${BROWSER_WORKER_URL}") String baseUrl,
+      @Value("${AGENT_WORKER_TOKEN}") String token) {
+    return new RestBrowserWorkerClient(baseUrl, token);
+  }
+  @Bean WorkerExecutionService workerExecutionService(AgentPlatformClient platform,
+      BrowserWorkerClient browser) {
+    return new WorkerExecutionService(platform, browser, SpringAiModelGateway::new);
+  }
 }

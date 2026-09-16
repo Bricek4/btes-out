@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import tools.jackson.core.type.TypeReference;
@@ -32,6 +33,11 @@ class AgentPlatformClientTest {
     try {
       String base = "http://127.0.0.1:" + port;
       var client = new AgentPlatformClient(base, "agent-token");
+      AgentTaskContext context = client.context(taskId);
+      assertEquals(taskId, context.taskId());
+      assertEquals("https://app.example", context.baseUrl());
+      assertEquals(Set.of("admin"), context.loginProfileReferences());
+      assertEquals("docs/users.md", context.parameters().get("outputPath"));
       ProviderConnection provider = client.provider(taskId);
       assertEquals("deepseek-chat", provider.model());
       assertEquals("secret-api-key", provider.apiKey());
@@ -44,12 +50,18 @@ class AgentPlatformClientTest {
       var published = client.publish(taskId, new AgentPlatformClient.ArtifactUpload(
           "docs/users.md", AgentPlatformClient.ArtifactKind.DOC, "text/markdown", artifact,
           "{\"markers\":[]}"));
+      var repeated = client.publish(taskId, new AgentPlatformClient.ArtifactUpload(
+          "docs/users.md", AgentPlatformClient.ArtifactKind.DOC, "text/markdown", artifact,
+          "{\"markers\":[]}"));
       assertEquals(artifactId, published.artifactId());
+      assertEquals(published, repeated);
       assertEquals("artifact://docs/" + artifactId, published.reference());
 
       CapturedRequest presign = requests.stream().filter(r -> r.path().endsWith("/presign")).findFirst().orElseThrow();
       assertEquals("DOC", presign.body().get("kind"));
+      assertTrue(String.valueOf(presign.body().get("idempotencyKey")).matches("[0-9a-f]{64}"));
       assertEquals((long) artifact.length, ((Number) presign.body().get("sizeBytes")).longValue());
+      assertEquals(1, requests.stream().filter(r -> r.path().endsWith("/presign")).count());
       CapturedRequest complete = requests.stream().filter(r -> r.path().endsWith("/complete")).findFirst().orElseThrow();
       assertEquals(reservationId.toString(), complete.body().get("reservationId"));
       CapturedRequest source = requests.stream().filter(r -> r.path().equals("/source")).findFirst().orElseThrow();
@@ -86,6 +98,34 @@ class AgentPlatformClientTest {
     }
   }
 
+  @Test void rejectsAPresignResponseThatDoesNotEchoTheBoundIdempotencyKey() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", exchange -> {
+      byte[] input = exchange.getRequestBody().readAllBytes();
+      String path = exchange.getRequestURI().getPath();
+      if (!path.endsWith("/presign")) throw new AssertionError("unexpected path " + path);
+      byte[] output = ("{\"artifactId\":\"" + UUID.randomUUID()
+          + "\",\"reservationId\":\"" + UUID.randomUUID()
+          + "\",\"idempotencyKey\":\"wrong\",\"putUrl\":\"http://127.0.0.1:1/unused\"}")
+          .getBytes(StandardCharsets.UTF_8);
+      exchange.getResponseHeaders().set("Content-Type", "application/json");
+      exchange.sendResponseHeaders(200, output.length);
+      exchange.getResponseBody().write(output);
+      exchange.close();
+    });
+    server.start();
+    try {
+      var client = new AgentPlatformClient("http://127.0.0.1:" + server.getAddress().getPort(), "agent-token");
+      var upload = new AgentPlatformClient.ArtifactUpload("docs/a.md", AgentPlatformClient.ArtifactKind.DOC,
+          "text/markdown", new byte[] {1}, "{}");
+      RuntimeException failure = assertThrows(RuntimeException.class,
+          () -> client.publish(UUID.randomUUID(), upload));
+      assertEquals("ARTIFACT_IDEMPOTENCY_MISMATCH", failure.getMessage());
+    } finally {
+      server.stop(0);
+    }
+  }
+
   private static void handlePlatform(HttpExchange exchange, UUID artifactId, UUID reservationId,
       List<CapturedRequest> requests) throws IOException {
     byte[] input = exchange.getRequestBody().readAllBytes();
@@ -98,13 +138,20 @@ class AgentPlatformClientTest {
     String path = exchange.getRequestURI().getPath();
     String response;
     if (path.equals("/source")) response = "source route /users";
+    else if (path.contains("/worker-context/agent/")) {
+      String taskId = path.substring(path.lastIndexOf('/') + 1);
+      response = "{\"taskId\":\"" + taskId + "\",\"sourceUrl\":\"http://127.0.0.1:" + exchange.getLocalAddress().getPort() + "/source\",\"template\":{\"id\":\"" + UUID.randomUUID() + "\",\"format\":\"markdown\",\"markdown\":\"# {{content}}\",\"html\":\"\",\"css\":\"\",\"schema\":\"{}\"},\"parameters\":\"{\\\"outputPath\\\":\\\"docs/users.md\\\",\\\"baseUrl\\\":\\\"https://app.example\\\"}\",\"providerProfileId\":\"" + UUID.randomUUID() + "\",\"modelId\":\"deepseek-chat\",\"loginProfiles\":[{\"id\":\"" + UUID.randomUUID() + "\",\"reference\":\"admin\",\"name\":\"Admin\"}]}";
+    }
     else if (path.endsWith("/provider-credential")) response = "{\"endpoint\":\"https://api.deepseek.com\",\"model\":\"deepseek-chat\",\"apiKey\":\"secret-api-key\",\"options\":{\"enable_thinking\":false}}";
-    else if (path.endsWith("/presign")) response = "{\"artifactId\":\"" + artifactId + "\",\"reservationId\":\"" + reservationId + "\",\"putUrl\":\"http://127.0.0.1:" + exchange.getLocalAddress().getPort() + "/put/object\"}";
+    else if (path.endsWith("/presign")) response = "{\"artifactId\":\"" + artifactId
+        + "\",\"reservationId\":\"" + reservationId + "\",\"idempotencyKey\":\""
+        + body.get("idempotencyKey") + "\",\"putUrl\":\"http://127.0.0.1:"
+        + exchange.getLocalAddress().getPort() + "/put/object\"}";
     else if (path.equals("/put/object")) response = "";
     else if (path.endsWith("/complete")) response = "{\"artifactId\":\"" + artifactId + "\",\"completed\":true}";
     else throw new AssertionError("unexpected path " + path);
     byte[] output = response.getBytes(StandardCharsets.UTF_8);
-    if (path.endsWith("/provider-credential") || path.endsWith("/presign") || path.endsWith("/complete")) {
+    if (path.contains("/worker-context/agent/") || path.endsWith("/provider-credential") || path.endsWith("/presign") || path.endsWith("/complete")) {
       exchange.getResponseHeaders().set("Content-Type", "application/json");
     } else if (path.equals("/source")) {
       exchange.getResponseHeaders().set("Content-Type", "text/plain");

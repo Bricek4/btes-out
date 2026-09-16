@@ -18,7 +18,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Agent-scoped Platform API client. Presigned object URLs never receive worker authorization. */
-public final class AgentPlatformClient {
+public final class AgentPlatformClient implements AgentPlatformGateway {
   private static final int MAX_SOURCE_BYTES = 20_000_000;
   private static final int MAX_ARTIFACT_BYTES = 20_000_000;
   private static final int MAX_MANIFEST_BYTES = 1_000_000;
@@ -27,6 +27,8 @@ public final class AgentPlatformClient {
 
   private final RestClient platform;
   private final String token;
+  private final java.util.concurrent.ConcurrentMap<PublicationKey, PublishedArtifact> completedPublications =
+      new java.util.concurrent.ConcurrentHashMap<>();
 
   public AgentPlatformClient(String platformBaseUrl, String agentWorkerToken) {
     this.platform = RestClient.builder().baseUrl(requireHttpUri(platformBaseUrl).toString()).build();
@@ -48,7 +50,45 @@ public final class AgentPlatformClient {
         requireText(value(response, "apiKey"), "provider credential is unavailable"), options(response.get("options")));
   }
 
-  public byte[] fetchSource(URI presignedGetUrl) {
+  @Override public AgentTaskContext context(UUID taskId) {
+    Objects.requireNonNull(taskId, "task id is required");
+    Map<?, ?> response;
+    try {
+      response = platform.get().uri("/internal/worker-context/agent/{taskId}", taskId)
+          .header(HttpHeaders.AUTHORIZATION, bearer()).retrieve().body(Map.class);
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("AGENT_CONTEXT_UNAVAILABLE");
+    }
+    if (response == null || !taskId.equals(uuid(response, "taskId"))) {
+      throw new PlatformOperationException("AGENT_CONTEXT_INVALID");
+    }
+    Object rawTemplate = response.get("template");
+    if (!(rawTemplate instanceof Map<?, ?> template)) throw new PlatformOperationException("AGENT_CONTEXT_INVALID");
+    AgentTemplateContext parsedTemplate = new AgentTemplateContext(uuid(template, "id"),
+        requireText(value(template, "format"), "template format is unavailable"),
+        value(template, "markdown"), value(template, "html"), value(template, "css"),
+        requireText(value(template, "schema"), "template schema is unavailable"));
+    Map<String, Object> parameters = objectMap(response.get("parameters"), "TASK_PARAMETERS_INVALID");
+    var profiles = new java.util.LinkedHashSet<String>();
+    Object rawProfiles = response.get("loginProfiles");
+    if (rawProfiles instanceof java.util.List<?> rows) {
+      for (Object row : rows) {
+        if (!(row instanceof Map<?, ?> profile)) throw new PlatformOperationException("AGENT_CONTEXT_INVALID");
+        profiles.add(requireText(value(profile, "reference"), "login profile reference is unavailable"));
+      }
+    } else if (rawProfiles != null) {
+      throw new PlatformOperationException("AGENT_CONTEXT_INVALID");
+    }
+    String baseUrl = value(response, "baseUrl");
+    if ((baseUrl == null || baseUrl.isBlank()) && parameters.get("baseUrl") instanceof String configured) {
+      baseUrl = configured;
+    }
+    return new AgentTaskContext(taskId, requireHttpUri(value(response, "sourceUrl")), parsedTemplate,
+        parameters, uuid(response, "providerProfileId"),
+        requireText(value(response, "modelId"), "model id is unavailable"), Set.copyOf(profiles), baseUrl);
+  }
+
+  @Override public byte[] fetchSource(URI presignedGetUrl) {
     URI source = requireHttpUri(presignedGetUrl == null ? null : presignedGetUrl.toString());
     try {
       byte[] bytes = RestClient.create().get().uri(source).retrieve().body(byte[].class);
@@ -62,22 +102,34 @@ public final class AgentPlatformClient {
     }
   }
 
-  public PublishedArtifact publish(UUID taskId, ArtifactUpload upload) {
+  @Override public PublishedArtifact publish(UUID taskId, ArtifactUpload upload) {
     Objects.requireNonNull(taskId, "task id is required");
     Objects.requireNonNull(upload, "artifact upload is required");
     byte[] bytes = upload.bytes();
     String sha256 = sha256(bytes);
+    String manifestSha256 = sha256(upload.manifest().getBytes(StandardCharsets.UTF_8));
+    var key = new PublicationKey(taskId, upload.name(), upload.kind(), upload.mediaType(), sha256,
+        manifestSha256);
+    return completedPublications.computeIfAbsent(key, ignored -> publishOnce(taskId, upload, bytes,
+        sha256, idempotencyKey(key)));
+  }
+
+  private PublishedArtifact publishOnce(UUID taskId, ArtifactUpload upload, byte[] bytes, String sha256,
+      String idempotencyKey) {
     Map<?, ?> reservation;
     try {
       reservation = platform.post().uri("/internal/tasks/{taskId}/artifacts/presign", taskId)
           .header(HttpHeaders.AUTHORIZATION, bearer())
           .body(Map.of("name", upload.name(), "kind", upload.kind().name(), "mediaType", upload.mediaType(),
-              "sizeBytes", bytes.length, "sha256", sha256))
+              "sizeBytes", bytes.length, "sha256", sha256, "idempotencyKey", idempotencyKey))
           .retrieve().body(Map.class);
     } catch (RuntimeException failure) {
       throw new PlatformOperationException("ARTIFACT_RESERVATION_FAILED");
     }
     if (reservation == null) throw new PlatformOperationException("ARTIFACT_RESERVATION_FAILED");
+    if (!idempotencyKey.equals(value(reservation, "idempotencyKey"))) {
+      throw new PlatformOperationException("ARTIFACT_IDEMPOTENCY_MISMATCH");
+    }
     UUID artifactId = uuid(reservation, "artifactId");
     UUID reservationId = uuid(reservation, "reservationId");
     URI putUrl = requireHttpUri(value(reservation, "putUrl"));
@@ -108,7 +160,17 @@ public final class AgentPlatformClient {
         "artifact://" + upload.kind().referenceSegment + "/" + artifactId, sha256);
   }
 
+  private static String idempotencyKey(PublicationKey key) {
+    String canonical = key.taskId() + "\n" + key.name() + "\n" + key.kind() + "\n"
+        + key.mediaType() + "\n" + key.sha256() + "\n" + key.manifestSha256();
+    return sha256(canonical.getBytes(StandardCharsets.UTF_8));
+  }
+
   private static Map<String, Object> options(Object value) {
+    return objectMap(value, "PROVIDER_OPTIONS_INVALID");
+  }
+
+  private static Map<String, Object> objectMap(Object value, String errorCode) {
     if (value == null) return Map.of();
     if (value instanceof Map<?, ?> map) {
       var result = new java.util.LinkedHashMap<String, Object>();
@@ -117,9 +179,9 @@ public final class AgentPlatformClient {
     }
     if (value instanceof String json) {
       try { return JSON.readValue(json, STRING_OBJECT_MAP); }
-      catch (JacksonException invalid) { throw new PlatformOperationException("PROVIDER_OPTIONS_INVALID"); }
+      catch (JacksonException invalid) { throw new PlatformOperationException(errorCode); }
     }
-    throw new PlatformOperationException("PROVIDER_OPTIONS_INVALID");
+    throw new PlatformOperationException(errorCode);
   }
 
   private static String value(Map<?, ?> map, String key) {
@@ -201,8 +263,43 @@ public final class AgentPlatformClient {
   }
 
   public record PublishedArtifact(UUID artifactId, UUID reservationId, String reference, String sha256) { }
+  private record PublicationKey(UUID taskId, String name, ArtifactKind kind, String mediaType,
+                                String sha256, String manifestSha256) { }
 
   static final class PlatformOperationException extends IllegalStateException {
     PlatformOperationException(String code) { super(code); }
+  }
+}
+
+interface AgentPlatformGateway {
+  AgentTaskContext context(UUID taskId);
+  ProviderConnection provider(UUID taskId);
+  byte[] fetchSource(URI sourceUrl);
+  AgentPlatformClient.PublishedArtifact publish(UUID taskId, AgentPlatformClient.ArtifactUpload upload);
+}
+
+record AgentTemplateContext(UUID versionId, String format, String markdown, String html,
+                            String css, String parameterSchema) {
+  AgentTemplateContext {
+    Objects.requireNonNull(versionId, "template version id is required");
+    if (format == null || format.isBlank()) throw new IllegalArgumentException("template format is required");
+    markdown = markdown == null ? "" : markdown;
+    html = html == null ? "" : html;
+    css = css == null ? "" : css;
+    parameterSchema = parameterSchema == null ? "{}" : parameterSchema;
+  }
+}
+
+record AgentTaskContext(UUID taskId, URI sourceUrl, AgentTemplateContext template,
+                        Map<String, Object> parameters, UUID providerProfileId, String modelId,
+                        Set<String> loginProfileReferences, String baseUrl) {
+  AgentTaskContext {
+    Objects.requireNonNull(taskId, "task id is required");
+    Objects.requireNonNull(sourceUrl, "source URL is required");
+    Objects.requireNonNull(template, "template is required");
+    parameters = Map.copyOf(parameters == null ? Map.of() : parameters);
+    Objects.requireNonNull(providerProfileId, "provider profile id is required");
+    if (modelId == null || modelId.isBlank()) throw new IllegalArgumentException("model id is required");
+    loginProfileReferences = Set.copyOf(loginProfileReferences == null ? Set.of() : loginProfileReferences);
   }
 }
