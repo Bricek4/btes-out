@@ -1,0 +1,16 @@
+server:
+  port: ${BROWSER_WORKER_PORT:8083}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+# Required runtime values have no insecure defaults.
+browser-worker:
+  platform-api-url: ${PLATFORM_API_URL}

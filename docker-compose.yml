@@ -1,0 +1,194 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - platform-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes:
+      - platform-objects:/data
+    ports:
+      - "9001:9001"
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 2; done;
+      mc mb --ignore-existing local/${S3_BUCKET}
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+
+  temporal-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: temporal
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${TEMPORAL_DB_PASSWORD}
+    volumes:
+      - temporal-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  temporal-admin-tools:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgres
+    volumes:
+      - ./deploy/temporal:/scripts:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/setup-postgres.sh
+    restart: on-failure:5
+
+  temporal:
+    image: temporalio/server:${TEMPORAL_VERSION}
+    depends_on:
+      temporal-admin-tools:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgres
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    volumes:
+      - ./deploy/temporal:/etc/temporal/config:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    ports:
+      - "7233:7233"
+
+  temporal-create-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: default
+    volumes:
+      - ./deploy/temporal:/scripts:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-namespace.sh
+
+  platform-api:
+    build:
+      context: .
+      dockerfile: platform-api/Dockerfile
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      SETUP_TOKEN: ${SETUP_TOKEN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN}
+      AGENT_WORKER_BASE_URL: http://agent-worker:8082
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: ${S3_BUCKET}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_PATH_STYLE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+
+  browser-worker:
+    build:
+      context: .
+      dockerfile: browser-worker/Dockerfile
+    environment:
+      BROWSER_WORKER_PORT: 8083
+      PLATFORM_API_URL: http://platform-api:8080
+      AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN}
+      BROWSER_LOCAL_MODE: ${BROWSER_LOCAL_MODE}
+      BROWSER_ALLOWED_HOSTS: ${BROWSER_ALLOWED_HOSTS}
+      BROWSER_ALLOWED_ORIGINS: ${BROWSER_ALLOWED_ORIGINS}
+    depends_on:
+      platform-api:
+        condition: service_started
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: agent-worker/Dockerfile
+    environment:
+      AGENT_WORKER_PORT: 8082
+      PLATFORM_API_URL: http://platform-api:8080
+      BROWSER_WORKER_URL: http://browser-worker:8083
+      AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+    depends_on:
+      platform-api:
+        condition: service_started
+      browser-worker:
+        condition: service_started
+
+  workflow-service:
+    build:
+      context: .
+      dockerfile: workflow-service/Dockerfile
+    environment:
+      TEMPORAL_TARGET: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: agent-studio-tasks
+      AGENT_WORKER_BASE_URL: http://agent-worker:8082
+      AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+    depends_on:
+      temporal-create-namespace:
+        condition: service_completed_successfully
+      agent-worker:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      platform-api:
+        condition: service_started
+    ports:
+      - "8088:80"
+
+volumes:
+  platform-postgres:
+  platform-objects:
+  temporal-postgres:

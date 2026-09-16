@@ -4,6 +4,7 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.Response;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.SelectOption;
@@ -25,6 +26,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
   private record RuntimeSession(BrowserContext context, Page page, List<String> trace, Set<String> secrets) {}
 
   private final Browser browser;
+  private final Playwright playwright;
   private final NavigationPolicy policy;
   private final SessionRegistry registry;
   private final LoginCredentialResolver credentials;
@@ -34,7 +36,12 @@ public final class PlaywrightBrowserService implements AutoCloseable {
 
   public PlaywrightBrowserService(Browser browser, NavigationPolicy policy, SessionRegistry registry,
       LoginCredentialResolver credentials, ArtifactPublisher artifacts, BrowserLimits limits) {
-    this.browser = browser; this.policy = policy; this.registry = registry;
+    this(null, browser, policy, registry, credentials, artifacts, limits);
+  }
+
+  public PlaywrightBrowserService(Playwright playwright, Browser browser, NavigationPolicy policy,
+      SessionRegistry registry, LoginCredentialResolver credentials, ArtifactPublisher artifacts, BrowserLimits limits) {
+    this.playwright = playwright; this.browser = browser; this.policy = policy; this.registry = registry;
     this.credentials = credentials; this.artifacts = artifacts; this.limits = limits;
   }
 
@@ -118,7 +125,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
   }
 
   public void close(UUID id, UUID taskId) { registry.remove(id, taskId); }
-  public void closeAll() { registry.closeAll(); browser.close(); }
+  public void closeAll() { registry.closeAll(); try { browser.close(); } finally { if (playwright != null) playwright.close(); } }
   @Override public void close() { closeAll(); }
 
   private OperationResult execute(UUID id, UUID taskId, String action, ExpectedState expected, ThrowingAction operation) {
