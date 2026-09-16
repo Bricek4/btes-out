@@ -5,11 +5,17 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestControllerAdvice
 final class WorkflowApiExceptionHandler {
+  private static final Logger LOG = LoggerFactory.getLogger(WorkflowApiExceptionHandler.class);
+
   @ExceptionHandler({IllegalArgumentException.class, HttpMessageNotReadableException.class})
-  ResponseEntity<ApiError> invalidRequest() {
+  ResponseEntity<ApiError> invalidRequest(Exception failure) {
+    // Keep diagnostics to a type/code pair. Jackson exception messages can contain request data.
+    LOG.warn("workflow request rejected as invalid: type={}", failure.getClass().getSimpleName());
     return ResponseEntity.badRequest().body(new ApiError("INVALID_REQUEST"));
   }
 

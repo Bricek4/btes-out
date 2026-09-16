@@ -13,6 +13,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import studio.agent.contracts.TaskType;
 import studio.agent.platform.config.PlatformProperties;
 import studio.agent.platform.config.RequiredPlatformSettings;
@@ -29,6 +31,7 @@ public class TaskWorkflowDispatchService {
   private static final int BATCH_SIZE = 8;
   private static final int MAX_ERROR_LENGTH = 120;
   private static final ObjectMapper JSON = new ObjectMapper();
+  private static final Logger LOG = LoggerFactory.getLogger(TaskWorkflowDispatchService.class);
 
   private final JdbcClient jdbc;
   private final RestClient workflow;
@@ -114,11 +117,12 @@ public class TaskWorkflowDispatchService {
                 "providerProfileReference", row.providerProfileReference(),
                 "requiresApproval", row.requiresApproval());
         String startBody = json(startPayload);
+        byte[] startBytes = startBody.getBytes(StandardCharsets.UTF_8);
         workflow.post()
             .uri("/internal/workflows/tasks/{taskId}/start", row.taskId())
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON).contentLength(startBody.getBytes(StandardCharsets.UTF_8).length)
-            .body(startBody)
+            .contentType(MediaType.APPLICATION_JSON).contentLength(startBytes.length)
+            .body(startBytes)
             .retrieve()
             .toBodilessEntity();
         markDispatched(row.taskId());
@@ -129,7 +133,7 @@ public class TaskWorkflowDispatchService {
           // forever and leave the task looking queued, so surface a terminal dispatch failure.
           markPermanentFailure(row, "WORKFLOW_INPUT_CONFLICT");
         } else {
-          markFailure(row, "WORKFLOW_HTTP_" + failure.getStatusCode().value());
+          markFailure(row, workflowFailureCode(failure));
         }
       } catch (RuntimeException failure) {
         markFailure(row, "WORKFLOW_UNAVAILABLE");
@@ -149,17 +153,18 @@ public class TaskWorkflowDispatchService {
           if (row.approvedReference() != null) body.put("approvedReference", row.approvedReference());
         }
         String commandBody = json(body);
+        byte[] commandBytes = commandBody.getBytes(StandardCharsets.UTF_8);
         workflow.post().uri("/internal/workflows/tasks/{taskId}/{action}", row.taskId(), row.action())
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON).contentLength(commandBody.getBytes(StandardCharsets.UTF_8).length)
-            .body(commandBody)
+            .contentType(MediaType.APPLICATION_JSON).contentLength(commandBytes.length)
+            .body(commandBytes)
             .retrieve().toBodilessEntity();
         markCommandDelivered(row.id());
       } catch (RestClientResponseException failure) {
         if (failure.getStatusCode().value() == 404 || failure.getStatusCode().value() == 409) {
           markCommandFailure(row, "WORKFLOW_COMMAND_REJECTED");
         } else {
-          markCommandFailure(row, "WORKFLOW_HTTP_" + failure.getStatusCode().value());
+          markCommandFailure(row, workflowFailureCode(failure));
         }
       } catch (RuntimeException failure) {
         markCommandFailure(row, "WORKFLOW_UNAVAILABLE");
@@ -250,6 +255,18 @@ public class TaskWorkflowDispatchService {
   private static String json(Object value) {
     try { return JSON.writeValueAsString(value); }
     catch (Exception invalid) { throw new IllegalStateException("workflow request serialization failed"); }
+  }
+
+  private static String workflowFailureCode(RestClientResponseException failure) {
+    int status = failure.getStatusCode().value();
+    String body = failure.getResponseBodyAsString();
+    String code = body.contains("INVALID_REQUEST") ? "INVALID_REQUEST"
+        : body.contains("WORKFLOW_INPUT_CONFLICT") ? "WORKFLOW_INPUT_CONFLICT"
+        : body.contains("WORKFLOW_NOT_FOUND") ? "WORKFLOW_NOT_FOUND"
+        : body.contains("WORKFLOW_SERVICE_UNAVAILABLE") ? "WORKFLOW_SERVICE_UNAVAILABLE" : null;
+    String safe = code == null ? "WORKFLOW_HTTP_" + status : "WORKFLOW_HTTP_" + status + "_" + code;
+    LOG.warn("workflow request rejected: status={}, code={}", status, safe);
+    return safe;
   }
 
   private record DispatchRow(UUID taskId, UUID projectId, String taskType, String sourceReference,
