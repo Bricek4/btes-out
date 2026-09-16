@@ -11,7 +11,14 @@ interface PlatformStatusReporter {
 }
 
 record PlatformStatusUpdate(String taskId, TaskStatus status, Integer progress,
-                            String resultReference, String failureCode) {
+                            String resultReference, String failureCode,
+                            String approvalType, String approvalMarkerId,
+                            String approvalReasonCode, String approvalReference) {
+  PlatformStatusUpdate(String taskId, TaskStatus status, Integer progress,
+      String resultReference, String failureCode) {
+    this(taskId, status, progress, resultReference, failureCode, null, null, null, null);
+  }
+
   PlatformStatusUpdate {
     WorkflowInput.requirePathSegment(taskId, "taskId");
     if (status == null || status == TaskStatus.QUEUED || status == TaskStatus.PAUSED) {
@@ -32,6 +39,21 @@ record PlatformStatusUpdate(String taskId, TaskStatus status, Integer progress,
     }
     if (status != TaskStatus.SUCCEEDED && resultReference != null) {
       throw new IllegalArgumentException("non-success status cannot contain a result reference");
+    }
+    if (approvalType != null) WorkflowInput.requireMachineCode(approvalType, "approvalType");
+    if (approvalMarkerId != null && !approvalMarkerId.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) {
+      throw new IllegalArgumentException("approvalMarkerId is invalid");
+    }
+    if (approvalReasonCode != null) WorkflowInput.requireMachineCode(approvalReasonCode, "approvalReasonCode");
+    if (approvalReference != null) WorkflowInput.requireOpaqueReference(approvalReference,
+        "approval://screenshot-route/", "approvalReference");
+    if (status == TaskStatus.WAITING_FOR_APPROVAL
+        && (approvalType == null || approvalMarkerId == null || approvalReasonCode == null || approvalReference == null)) {
+      throw new IllegalArgumentException("approval status requires a typed approval request");
+    }
+    if (status != TaskStatus.WAITING_FOR_APPROVAL
+        && (approvalType != null || approvalMarkerId != null || approvalReasonCode != null || approvalReference != null)) {
+      throw new IllegalArgumentException("approval details require waiting status");
     }
   }
 }

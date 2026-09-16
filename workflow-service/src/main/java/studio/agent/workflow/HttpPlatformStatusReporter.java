@@ -8,6 +8,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.LinkedHashMap;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -41,7 +42,7 @@ final class HttpPlatformStatusReporter implements PlatformStatusReporter {
     byte[] body;
     try {
       body = json.writeValueAsBytes(new PlatformEventBody(update.status().name(), update.progress(),
-          null, update.resultReference(), update.failureCode(), "{}"));
+          null, update.resultReference(), update.failureCode(), details(update)));
     } catch (JacksonException failure) {
       throw ApplicationFailure.newNonRetryableFailure(
           "PLATFORM_STATUS_SERIALIZATION_FAILED", "STATUS_SERIALIZATION");
@@ -72,4 +73,14 @@ final class HttpPlatformStatusReporter implements PlatformStatusReporter {
 
   private record PlatformEventBody(String status, Integer progress, String message,
                                    String resultReference, String failureCode, String details) { }
+
+  private String details(PlatformStatusUpdate update) throws JacksonException {
+    if (update.status() != studio.agent.contracts.TaskStatus.WAITING_FOR_APPROVAL) return "{}";
+    var values = new LinkedHashMap<String, String>();
+    values.put("approvalType", update.approvalType());
+    values.put("markerId", update.approvalMarkerId());
+    values.put("reasonCode", update.approvalReasonCode());
+    values.put("approvalReference", update.approvalReference());
+    return json.writeValueAsString(values);
+  }
 }

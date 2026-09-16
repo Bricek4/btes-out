@@ -35,6 +35,14 @@ GIT_ALLOWED_HOSTS=github.com,gitlab.com,bitbucket.org
 GIT_MAX_ARCHIVE_BYTES=104857600
 GIT_MAX_FILES=20000
 GIT_TIMEOUT_SECONDS=90
+PUBLIC_BASE_URL=http://localhost:8088
+MAIL_FROM=no-reply@agent-studio.local
+MAIL_HOST=mailpit
+MAIL_PORT=1025
+MAIL_USERNAME=
+MAIL_PASSWORD=
+MAIL_AUTH=false
+MAIL_STARTTLS=false
 EOF
 chmod 600 "$output"
 echo "wrote $output with generated local-only credentials"

@@ -13,6 +13,7 @@ import type {
   TaskDraft,
   TaskEvent,
   Template,
+  TemplateVersion,
   TemplateVersionInput,
 } from '../types'
 
@@ -131,6 +132,7 @@ export const api = {
   },
   tasks: () => request<Task[]>('/api/v1/tasks'),
   templates: () => request<Template[]>('/api/v1/templates'),
+  templateVersions: (templateId: string) => request<TemplateVersion[]>(`/api/v1/templates/${templateId}/versions`),
   async providers() {
     const values = await request<Array<Omit<Provider, 'isDefault'> & { defaultProfile: boolean }>>('/api/v1/providers')
     return values.map(({ defaultProfile, ...provider }) => ({ ...provider, isDefault: defaultProfile }))
@@ -167,9 +169,10 @@ export const api = {
   taskAction: (taskId: string, action: 'pause' | 'resume' | 'cancel') => request<Task>(`/api/v1/tasks/${taskId}/${action}`, {
     method: 'POST',
   }),
-  decideApproval: (taskId: string, approvalId: string, decision: string, text = '') => request<void>(
+  pendingApproval: (taskId: string) => request<Approval>(`/api/v1/tasks/${taskId}/approvals/pending`),
+  decideApproval: (taskId: string, approvalId: string, decision: string, text = '', approvedReference?: string | null) => request<void>(
     `/api/v1/tasks/${taskId}/approvals/${approvalId}/decision`,
-    { method: 'POST', body: JSON.stringify({ decision, text }) },
+    { method: 'POST', body: JSON.stringify({ decision, text, ...(approvedReference ? { approvedReference } : {}) }) },
   ),
   async taskEvents(taskId: string, after = 0): Promise<TaskEvent[]> {
     const body = await requestText(`/api/v1/tasks/${taskId}/events`, {

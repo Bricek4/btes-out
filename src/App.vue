@@ -37,7 +37,7 @@ import ProjectCard from './components/ProjectCard.vue'
 import TaskTable from './components/TaskTable.vue'
 import ConfigManagerModal from './components/ConfigManagerModal.vue'
 import { api, ApiError } from './lib/api'
-import type { ArtifactNode, Member, Project, ShareGrant, Task, TaskDraft, TaskEvent, Template, Provider, ProviderModel, LoginProfile, TaskStatus } from './types'
+import type { Approval, ArtifactNode, Member, Project, ShareGrant, Task, TaskDraft, TaskEvent, Template, Provider, ProviderModel, LoginProfile, TaskStatus } from './types'
 
 const activeSection = ref('overview')
 const sidebarCollapsed = ref(false)
@@ -53,6 +53,7 @@ const providerBusyId = ref('')
 const profiles = ref<LoginProfile[]>([])
 const selectedTask = ref<Task | null>(null)
 const selectedTaskEvents = ref<TaskEvent[]>([])
+const pendingApproval = ref<Approval | null>(null)
 const taskEventError = ref('')
 const selectedTaskArtifacts = ref<ArtifactNode[]>([])
 const artifactError = ref('')
@@ -149,7 +150,12 @@ async function loadData(showSpinner = true) {
     if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].projectId
   }
   if (taskResult.status === 'fulfilled') tasks.value = taskResult.value
-  if (templateResult.status === 'fulfilled') templates.value = templateResult.value
+  if (templateResult.status === 'fulfilled') {
+    templates.value = templateResult.value
+    if (!selectedTemplateVersionId.value) {
+      selectedTemplateVersionId.value = templates.value.find((template) => template.latestVersionId)?.latestVersionId ?? ''
+    }
+  }
   if (providerResult.status === 'fulfilled') providers.value = providerResult.value
   if (profileResult.status === 'fulfilled') profiles.value = profileResult.value
   const failed = results.find((result) => result.status === 'rejected')
@@ -285,9 +291,38 @@ async function refreshTaskArtifacts(task: Task) {
   }
 }
 
+async function refreshPendingApproval(task: Task) {
+  pendingApproval.value = null
+  if (task.status !== 'WAITING_FOR_APPROVAL') return
+  try {
+    pendingApproval.value = await api.pendingApproval(task.taskId)
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 404)) {
+      taskEventError.value = error instanceof ApiError ? error.message : '审批信息读取失败'
+    }
+  }
+}
+
 async function openTask(task: Task) {
   selectedTask.value = task
-  await Promise.all([refreshTaskEvents(task), refreshTaskArtifacts(task)])
+  await Promise.all([refreshTaskEvents(task), refreshTaskArtifacts(task), refreshPendingApproval(task)])
+}
+
+async function decidePendingApproval(decision: string, text = 'approved') {
+  if (!selectedTask.value || !pendingApproval.value) return
+  try {
+    await api.decideApproval(selectedTask.value.taskId, pendingApproval.value.id, decision, text, pendingApproval.value.evidenceReference)
+    pendingApproval.value = null
+    await loadData(false)
+    const updated = tasks.value.find((item) => item.taskId === selectedTask.value?.taskId)
+    if (updated) {
+      selectedTask.value = updated
+      await Promise.all([refreshTaskEvents(updated), refreshTaskArtifacts(updated), refreshPendingApproval(updated)])
+    }
+    notify(decision.toLowerCase().startsWith('reject') ? '审批已拒绝' : '审批已提交')
+  } catch (error) {
+    errorMessage.value = error instanceof ApiError ? error.message : '审批提交失败'
+  }
 }
 
 async function taskAction(task: Task, action: 'pause' | 'resume' | 'cancel') {
@@ -650,7 +685,7 @@ onMounted(() => loadData())
       <div class="task-inspector__head"><div><span class="section-head__eyebrow">TASK DETAIL</span><h3>{{ typeLabels[selectedTask.type] }}</h3></div><button class="icon-button" type="button" aria-label="关闭任务详情" @click="selectedTask = null"><X :size="18" /></button></div>
       <div class="task-inspector__status"><span class="status-pill" :class="`status-pill--${selectedTask.status.toLowerCase()}`"><span class="status-pill__dot" />{{ statusLabels[selectedTask.status] }}</span><span class="muted">{{ selectedTask.taskId.slice(0, 12) }}</span></div>
       <div class="inspector-actions"><button v-if="selectedTask.status === 'RUNNING'" class="button button--quiet" type="button" @click="taskAction(selectedTask, 'pause')"><Menu :size="15" />暂停</button><button v-if="selectedTask.status === 'PAUSED'" class="button button--quiet" type="button" @click="taskAction(selectedTask, 'resume')"><ArrowRight :size="15" />恢复</button><button v-if="['RUNNING', 'QUEUED', 'PAUSED', 'WAITING_FOR_APPROVAL'].includes(selectedTask.status)" class="button button--danger" type="button" @click="taskAction(selectedTask, 'cancel')"><X :size="15" />取消</button></div>
-      <div v-if="selectedTask.status === 'WAITING_FOR_APPROVAL'" class="approval-box"><div class="approval-box__icon"><LockKeyhole :size="17" /></div><div><strong>需要人工确认</strong><p>Platform API 尚未提供当前待审批项的读取接口，前端无法安全取得 approvalId、选项和截止时间。</p><div class="approval-box__actions"><button class="button button--primary" type="button" title="需要 GET /api/v1/tasks/{taskId}/approvals/pending" disabled><Check :size="15" />确认继续</button></div></div></div>
+      <div v-if="selectedTask.status === 'WAITING_FOR_APPROVAL'" class="approval-box"><div class="approval-box__icon"><LockKeyhole :size="17" /></div><div><strong>需要人工确认</strong><p>{{ pendingApproval?.prompt ?? '正在读取待确认内容…' }}</p><div v-if="pendingApproval?.choices?.length" class="approval-choices"><button v-for="choice in pendingApproval.choices" :key="choice" class="button button--quiet" type="button" @click="decidePendingApproval(choice, choice)">{{ choice }}</button></div><div class="approval-box__actions"><button v-if="pendingApproval && !pendingApproval.choices?.length" class="button button--primary" type="button" @click="decidePendingApproval('approve')"><Check :size="15" />确认继续</button><button v-if="pendingApproval && !pendingApproval.choices?.length" class="button button--quiet" type="button" @click="decidePendingApproval('reject','rejected')">拒绝</button></div></div></div>
       <div class="inspector-block"><span class="section-head__eyebrow">EVENT STREAM</span><div v-if="taskEventError" class="config-error">{{ taskEventError }}</div><div class="event-list"><div v-for="event in selectedTaskEvents" :key="event.sequence" class="event-item"><span class="event-item__line" /><div><strong>{{ event.message ?? event.type }}</strong><small>{{ event.status }} · #{{ event.sequence }}</small></div></div><div v-if="selectedTaskEvents.length === 0 && !taskEventError" class="event-empty"><LoaderCircle :size="16" />等待事件</div></div></div>
       <div class="inspector-block"><div class="artifact-section-head"><span class="section-head__eyebrow">ARTIFACTS</span><button v-if="flatArtifacts.some((item) => item.node.type === 'ARTIFACT')" class="text-button" type="button" :disabled="artifactBusy" @click="exportArtifacts"><Archive :size="14" />导出 ZIP</button></div><div v-if="artifactError" class="config-error">{{ artifactError }}</div><div class="artifact-tree"><div v-for="item in flatArtifacts" :key="item.node.path" class="artifact-row" :class="{ 'artifact-row--folder': item.node.type === 'FOLDER' }" :style="{ paddingLeft: `${10 + item.depth * 15}px` }"><span class="artifact-row__file"><FileCode2 v-if="item.node.type === 'FOLDER'" :size="15" /><Image v-else-if="item.node.kind === 'SCREENSHOT'" :size="15" /><FileText v-else :size="15" /><span><strong>{{ item.node.name }}</strong><small v-if="item.node.type === 'ARTIFACT'">v{{ item.node.version }} · {{ item.node.mediaType }}</small></span></span><span v-if="item.node.type === 'ARTIFACT'" class="artifact-row__actions"><button class="icon-button" type="button" aria-label="预览产物" :disabled="artifactBusy" @click="previewArtifact(item.node)"><Eye :size="14" /></button><button class="icon-button" type="button" aria-label="下载产物" :disabled="artifactBusy" @click="downloadArtifact(item.node)"><Download :size="14" /></button><button class="icon-button" type="button" aria-label="分享产物" :disabled="artifactBusy" @click="openArtifactShare(item.node)"><Share2 :size="14" /></button></span></div><div v-if="flatArtifacts.length === 0 && !artifactError" class="event-empty">当前任务还没有已发布产物</div></div></div>
       <div v-if="selectedTask.resultReference && flatArtifacts.length === 0" class="artifact-preview"><div class="artifact-preview__top"><span><FileCode2 :size="15" />旧版产物引用</span></div><div class="artifact-preview__body"><div class="artifact-preview__file"><FileText :size="18" /><span>{{ selectedTask.resultReference }}</span></div><div class="artifact-preview__hint">产物树暂未返回此引用对应的版本。</div></div></div>

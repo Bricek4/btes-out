@@ -116,8 +116,14 @@ public final class HttpTaskActivities implements TaskActivities {
     Integer progress = result.status() == studio.agent.contracts.TaskStatus.SUCCEEDED ? 100 : null;
     String failure = result.status() == studio.agent.contracts.TaskStatus.CANCELED
         ? "AGENT_CANCELED" : result.failureCode();
-    statusReporter.report(new PlatformStatusUpdate(taskId, result.status(), progress,
-        result.artifactReference(), failure));
+    if (result.status() == studio.agent.contracts.TaskStatus.WAITING_FOR_APPROVAL) {
+      TaskApprovalRequest approval = result.approval();
+      statusReporter.report(new PlatformStatusUpdate(taskId, result.status(), progress,
+          null, null, approval.type(), approval.markerId(), approval.reasonCode(), approval.reference()));
+    } else {
+      statusReporter.report(new PlatformStatusUpdate(taskId, result.status(), progress,
+          result.artifactReference(), failure));
+    }
   }
 
   private void reportFailure(String taskId, String failureCode) {

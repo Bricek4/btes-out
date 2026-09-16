@@ -3,6 +3,9 @@ package studio.agent.platform.workflow;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Locale;
+import java.util.LinkedHashMap;
+import java.util.Set;
 import org.springframework.http.HttpHeaders;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -62,6 +65,34 @@ public class TaskWorkflowDispatchService {
         .update();
   }
 
+  public void enqueueSignal(UUID taskId, String action) {
+    if (taskId == null || action == null || !Set.of("pause", "resume", "cancel").contains(action)) {
+      throw new IllegalArgumentException("workflow signal is invalid");
+    }
+    enqueueCommand(taskId, action, null, null);
+  }
+
+  public void enqueueApproval(UUID taskId, String decision, String approvedReference) {
+    if (taskId == null || decision == null) throw new IllegalArgumentException("approval command is invalid");
+    String normalized = decision.trim().toLowerCase(Locale.ROOT);
+    if (!Set.of("approve", "approved", "continue", "reject", "rejected", "cancel").contains(normalized)) {
+      throw new IllegalArgumentException("approval decision is invalid");
+    }
+    if (approvedReference != null && !approvedReference.matches("approval://screenshot-route/[A-Za-z0-9][A-Za-z0-9._/-]*")) {
+      throw new IllegalArgumentException("approval reference is invalid");
+    }
+    enqueueCommand(taskId, "approve", normalized, approvedReference);
+  }
+
+  private void enqueueCommand(UUID taskId, String action, String decision, String approvedReference) {
+    jdbc.sql("""
+        INSERT INTO task_workflow_commands(id,task_id,action,decision,approved_reference,attempts,next_attempt_at,created_at)
+        VALUES(:id,:task,:action,:decision,:reference,0,:next,:created)
+        """).param("id", UUID.randomUUID()).param("task", taskId).param("action", action)
+        .param("decision", decision).param("reference", approvedReference)
+        .param("next", OffsetDateTime.now()).param("created", OffsetDateTime.now()).update();
+  }
+
   /** Runs on a single platform instance in local Compose; SKIP LOCKED keeps it safe to scale later. */
   @Scheduled(fixedDelayString = "${agent-studio.workflow.dispatch-interval-ms:1000}")
   public void dispatchPending() {
@@ -92,6 +123,34 @@ public class TaskWorkflowDispatchService {
         }
       } catch (RuntimeException failure) {
         markFailure(row, "WORKFLOW_UNAVAILABLE");
+      }
+    }
+  }
+
+  @Scheduled(fixedDelayString = "${agent-studio.workflow.dispatch-interval-ms:1000}")
+  public void dispatchCommands() {
+    for (int i = 0; i < BATCH_SIZE; i++) {
+      CommandRow row = claimCommand();
+      if (row == null) return;
+      try {
+        var body = new LinkedHashMap<String, String>();
+        if ("approve".equals(row.action())) {
+          body.put("decision", row.decision());
+          if (row.approvedReference() != null) body.put("approvedReference", row.approvedReference());
+        }
+        workflow.post().uri("/internal/workflows/tasks/{taskId}/{action}", row.taskId(), row.action())
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .body(body)
+            .retrieve().toBodilessEntity();
+        markCommandDelivered(row.id());
+      } catch (RestClientResponseException failure) {
+        if (failure.getStatusCode().value() == 404 || failure.getStatusCode().value() == 409) {
+          markCommandFailure(row, "WORKFLOW_COMMAND_REJECTED");
+        } else {
+          markCommandFailure(row, "WORKFLOW_HTTP_" + failure.getStatusCode().value());
+        }
+      } catch (RuntimeException failure) {
+        markCommandFailure(row, "WORKFLOW_UNAVAILABLE");
       }
     }
   }
@@ -130,6 +189,33 @@ public class TaskWorkflowDispatchService {
         .param("next", OffsetDateTime.now().plusSeconds(delay)).param("error", safe).param("task", row.taskId()).update();
   }
 
+  private CommandRow claimCommand() {
+    OffsetDateTime now = OffsetDateTime.now();
+    return jdbc.sql("""
+        UPDATE task_workflow_commands c
+           SET attempts=c.attempts+1,next_attempt_at=:retry
+         WHERE c.id=(SELECT candidate.id FROM task_workflow_commands candidate
+          WHERE candidate.delivered_at IS NULL AND candidate.next_attempt_at<=:now
+          ORDER BY candidate.created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+        RETURNING c.id,c.task_id,c.action,c.decision,c.approved_reference,c.attempts
+        """).param("now", now).param("retry", now.plusSeconds(2))
+        .query((rs, n) -> new CommandRow(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+            rs.getString(3), rs.getString(4), rs.getString(5), rs.getInt(6))).optional().orElse(null);
+  }
+
+  private void markCommandDelivered(UUID id) {
+    jdbc.sql("UPDATE task_workflow_commands SET delivered_at=:now,last_error_code=NULL WHERE id=:id")
+        .param("now", OffsetDateTime.now()).param("id", id).update();
+  }
+
+  private void markCommandFailure(CommandRow row, String code) {
+    long delay = Math.min(300L, 1L << Math.min(8, Math.max(1, row.attempts())));
+    jdbc.sql("UPDATE task_workflow_commands SET next_attempt_at=:next,last_error_code=:error WHERE id=:id")
+        .param("next", OffsetDateTime.now().plusSeconds(delay))
+        .param("error", code.substring(0, Math.min(MAX_ERROR_LENGTH, code.length())))
+        .param("id", row.id()).update();
+  }
+
   static String workflowId(UUID taskId) {
     if (taskId == null) throw new IllegalArgumentException("task id is required");
     return "task-" + taskId;
@@ -138,4 +224,6 @@ public class TaskWorkflowDispatchService {
   private record DispatchRow(UUID taskId, UUID projectId, String taskType, String sourceReference,
                              String templateVersionReference, String parametersReference,
                              String providerProfileReference, boolean requiresApproval, int attempts) { }
+  private record CommandRow(UUID id, UUID taskId, String action, String decision,
+                            String approvedReference, int attempts) { }
 }

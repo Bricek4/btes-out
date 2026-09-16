@@ -35,6 +35,13 @@ services:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
 
+  mailpit:
+    image: axllent/mailpit:v1.21.8
+    environment:
+      MP_MAX_MESSAGES: 500
+    ports:
+      - "8025:8025"
+
   temporal-postgres:
     image: postgres:16
     environment:
@@ -128,11 +135,21 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_PATH_STYLE: "true"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      MAIL_FROM: ${MAIL_FROM}
+      MAIL_HOST: ${MAIL_HOST}
+      MAIL_PORT: ${MAIL_PORT}
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      MAIL_AUTH: ${MAIL_AUTH}
+      MAIL_STARTTLS: ${MAIL_STARTTLS}
     depends_on:
       postgres:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_started
     ports:
       - "8080:8080"
 

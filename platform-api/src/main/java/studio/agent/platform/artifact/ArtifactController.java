@@ -1,6 +1,5 @@
 package studio.agent.platform.artifact;
 
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
@@ -46,11 +45,14 @@ public class ArtifactController {
   }
 
   @GetMapping("/artifacts/{artifactId}/download")
-  ResponseEntity<Void> download(CurrentUser user, @PathVariable UUID artifactId,
+  ResponseEntity<StreamingResponseBody> download(CurrentUser user, @PathVariable UUID artifactId,
                                 @RequestParam(required = false) Integer version) {
     var stored = artifacts.readableVersion(user, artifactId, version);
-    return ResponseEntity.status(302).location(URI.create(artifacts.downloadUrl(stored).toString()))
-        .cacheControl(CacheControl.noStore()).build();
+    StreamingResponseBody body = output -> artifacts.streamDownload(stored, output);
+    return ResponseEntity.ok().contentType(safeMediaType(stored.mediaType()))
+        .cacheControl(CacheControl.noStore()).header(HttpHeaders.CONTENT_DISPOSITION,
+            ContentDisposition.attachment().filename(stored.name(), StandardCharsets.UTF_8).build().toString())
+        .header("X-Content-Type-Options", "nosniff").body(body);
   }
 
   @GetMapping(value = {"/tasks/{taskId}/artifacts/export", "/tasks/{taskId}/artifacts/export.zip"}, produces = "application/zip")

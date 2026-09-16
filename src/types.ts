@@ -53,6 +53,20 @@ export interface Template {
   skillId: string
   visibility: 'PUBLIC' | 'PERSONAL'
   latestVersion?: number | null
+  latestVersionId?: string | null
+}
+
+export interface TemplateVersion {
+  id: string
+  ordinal: number
+  outputFormat: string
+  parameterSchema?: unknown
+  formLayout?: unknown
+  allowedSections?: unknown
+  markdownTemplate?: string | null
+  htmlTemplate?: string | null
+  css?: string | null
+  validationRules?: unknown
 }
 
 export interface Provider {
@@ -148,6 +162,7 @@ export interface Approval {
   prompt: string
   choices?: string[]
   expiresAt?: string
+  evidenceReference?: string | null
 }
 
 export interface TemplateVersionInput {

@@ -159,8 +159,11 @@ final class ArtifactService {
     return report;
   }
 
-  java.net.URL downloadUrl(StoredVersion version) {
-    return objects.presignDownload(version.objectKey(), version.name(), Duration.ofMinutes(10));
+  void streamDownload(StoredVersion version, java.io.OutputStream output) {
+    long copied = objects.copyTo(version.objectKey(), MAX_EXPORT_BYTES, output);
+    if (copied != version.sizeBytes()) {
+      throw new IllegalStateException("stored artifact size changed during download");
+    }
   }
 
   private ArtifactRow readable(CurrentUser user, UUID artifactId) {

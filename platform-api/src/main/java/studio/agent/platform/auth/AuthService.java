@@ -15,8 +15,8 @@ import studio.agent.platform.security.TokenDigest;
 
 @Service
 public class AuthService {
-  private final JdbcClient jdbc; private final PasswordEncoder passwords; private final PlatformProperties properties;
-  public AuthService(JdbcClient jdbc, PasswordEncoder passwords, PlatformProperties properties) { this.jdbc=jdbc; this.passwords=passwords; this.properties=properties; }
+  private final JdbcClient jdbc; private final PasswordEncoder passwords; private final PlatformProperties properties; private final VerificationDelivery delivery;
+  public AuthService(JdbcClient jdbc, PasswordEncoder passwords, PlatformProperties properties, VerificationDelivery delivery) { this.jdbc=jdbc; this.passwords=passwords; this.properties=properties; this.delivery=delivery; }
 
   @Transactional public IssuedToken setup(String setupToken, String organizationName, String email, String password) {
     if (!constantTimeEquals(properties.setupToken(), setupToken)) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "SETUP_TOKEN_INVALID");
@@ -33,10 +33,10 @@ public class AuthService {
   @Transactional public void register(String email, String password) {
     validatePassword(password); var org=jdbc.sql("SELECT id FROM organizations ORDER BY created_at LIMIT 1").query(UUID.class).optional()
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,"SETUP_REQUIRED"));
-    var id=UUID.randomUUID(); var now=OffsetDateTime.now();
+    var id=UUID.randomUUID(); var now=OffsetDateTime.now(); String normalizedEmail=normalizeEmail(email);
     jdbc.sql("INSERT INTO users(id,organization_id,email,role,password_hash,created_at) VALUES(:id,:org,:email,'MEMBER',:password,:now)")
-        .param("id",id).param("org",org).param("email",normalizeEmail(email)).param("password",passwords.encode(password)).param("now",now).update();
-    issuePurpose(id,"EMAIL_VERIFY",24);
+        .param("id",id).param("org",org).param("email",normalizedEmail).param("password",passwords.encode(password)).param("now",now).update();
+    delivery.sendVerification(normalizedEmail, issuePurpose(id,"EMAIL_VERIFY",24));
   }
 
   @Transactional public void verifyEmail(String token) { consume(token,"EMAIL_VERIFY", "UPDATE users SET email_verified_at=:now WHERE id=:user"); }
@@ -51,8 +51,8 @@ public class AuthService {
   }
 
   public void requestReset(String email) {
-    jdbc.sql("SELECT id FROM users WHERE lower(email)=:email AND disabled_at IS NULL").param("email",normalizeEmail(email)).query(UUID.class).optional()
-        .ifPresent(id -> issuePurpose(id,"PASSWORD_RESET",1));
+    jdbc.sql("SELECT id,email FROM users WHERE lower(email)=:email AND disabled_at IS NULL").param("email",normalizeEmail(email)).query((rs,n)->new Object[]{rs.getObject(1,UUID.class),rs.getString(2)}).optional()
+        .ifPresent(row -> delivery.sendPasswordReset((String) row[1], issuePurpose((UUID) row[0],"PASSWORD_RESET",1)));
   }
 
   @Transactional public void reset(String token,String newPassword) {
@@ -71,9 +71,13 @@ public class AuthService {
       .param("hash",TokenDigest.hash(token)).param("purpose",purpose).param("now",now).query((rs,n)->new UUID[]{rs.getObject(1,UUID.class),rs.getObject(2,UUID.class)}).optional()
       .orElseThrow(()->new ResponseStatusException(HttpStatus.BAD_REQUEST,"TOKEN_INVALID_OR_EXPIRED")); jdbc.sql("UPDATE auth_tokens SET used_at=:now WHERE id=:id").param("now",now).param("id",id[0]).update(); return id[1]; }
   private void seedTemplates(UUID org,UUID admin,OffsetDateTime now) {
-    for (var seed : new String[][]{{"00000000-0000-0000-0000-000000000101","Project documentation"},{"00000000-0000-0000-0000-000000000102","User guide"},{"00000000-0000-0000-0000-000000000103","HTML publication"},{"00000000-0000-0000-0000-000000000104","Screenshot set"}}) {
+    for (var seed : new String[][]{
+        {"00000000-0000-0000-0000-000000000101","Project documentation","MARKDOWN","# {{title}}\n\n{{content}}","",""},
+        {"00000000-0000-0000-0000-000000000102","User guide","MARKDOWN","# {{title}}\n\n{{content}}","",""},
+        {"00000000-0000-0000-0000-000000000103","HTML publication","HTML","","<main><h1>{{title}}</h1><section>{{content}}</section></main>","main{max-width:960px;margin:0 auto;padding:2rem;font-family:system-ui,sans-serif}"},
+        {"00000000-0000-0000-0000-000000000104","Screenshot set","MARKDOWN","# {{title}}","",""}}) {
       var template=UUID.randomUUID(); jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,NULL,:skill,:name,'PUBLIC',:now)").param("id",template).param("org",org).param("skill",UUID.fromString(seed[0])).param("name",seed[1]).param("now",now).update();
-      jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,'MARKDOWN','{\"type\":\"object\",\"additionalProperties\":false}'::jsonb,'{}'::jsonb,'[]'::jsonb,'# {{title}}',NULL,NULL,'[]'::jsonb,:user,:now)").param("id",UUID.randomUUID()).param("template",template).param("user",admin).param("now",now).update();
+      jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,:format,'{\"type\":\"object\",\"additionalProperties\":false}'::jsonb,'{}'::jsonb,'[]'::jsonb,NULLIF(:markdown,''),NULLIF(:html,''),NULLIF(:css,''),'[]'::jsonb,:user,:now)").param("id",UUID.randomUUID()).param("template",template).param("format",seed[2]).param("markdown",seed[3]).param("html",seed[4]).param("css",seed[5]).param("user",admin).param("now",now).update();
     }
   }
   private static String required(String v){if(v==null||v.isBlank())throw new IllegalArgumentException("value is required");return v.trim();}
