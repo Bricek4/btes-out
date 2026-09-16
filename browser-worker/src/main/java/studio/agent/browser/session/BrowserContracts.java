@@ -32,7 +32,7 @@ record OperationResult(OperationStatus status, String reachedUrl, String snapsho
 record ScreenshotResult(String markerId, String profileReference, String reachedUrl, String artifactReference,
                         OperationStatus status, BrowserError error, List<String> trace) {}
 
-record LoginCredential(String loginPath, String username, String password, LocatorSpec usernameLocator,
+record LoginCredential(String loginUrl, String loginPath, String username, String password, LocatorSpec usernameLocator,
                        LocatorSpec passwordLocator, LocatorSpec submitLocator, ExpectedState expected) {}
 record PublishedArtifact(String reference, byte[] bytes, String sha256) {}
 

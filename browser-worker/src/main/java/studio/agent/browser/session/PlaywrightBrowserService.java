@@ -80,12 +80,15 @@ public final class PlaywrightBrowserService implements AutoCloseable {
       LoginCredential credential = credentials.resolve(taskId, session.profileReference());
       if (credential == null) throw new BrowserActionException("LOGIN_PROFILE_NOT_FOUND", "login profile could not be resolved");
       runtime.secrets().add(credential.username()); runtime.secrets().add(credential.password());
-      URI target = resolve(session.baseUrl(), credential.loginPath());
+      if (credential.loginUrl() == null || credential.loginUrl().isBlank()) {
+        throw new BrowserActionException("LOGIN_URL_INVALID", "login profile has no login URL");
+      }
+      URI target = resolve(session.baseUrl(), credential.loginUrl());
       navigate(runtime.page(), target, session.baseUrl());
       locator(runtime.page(), credential.usernameLocator()).fill(credential.username());
       locator(runtime.page(), credential.passwordLocator()).fill(credential.password());
       locator(runtime.page(), credential.submitLocator()).click();
-      verify(runtime.page(), credential.expected(), session.baseUrl());
+      verify(runtime.page(), loginExpected(credential, session.baseUrl()), session.baseUrl());
     });
     if (result.status() == OperationStatus.FAILED && ("EXPECTED_URL_NOT_REACHED".equals(result.error().code()) || "EXPECTED_STATE_NOT_REACHED".equals(result.error().code()))) {
       return new OperationResult(OperationStatus.FAILED, result.reachedUrl(), result.snapshot(), result.trace(), new BrowserError("LOGIN_REJECTED", "login credentials were rejected or did not reach the expected state"));
@@ -107,11 +110,23 @@ public final class PlaywrightBrowserService implements AutoCloseable {
   public synchronized OperationResult click(UUID id, ClickCommand c) {
     return execute(id, c.taskId(), "CLICK:" + safe(c.locator()), c.expected(), r -> {
       Locator target = locator(r.page(), c.locator());
+      try {
+        // count() is intentionally checked only after Playwright has waited for the first
+        // matching node. This preserves deterministic ambiguity errors without rejecting
+        // controls that are mounted by an asynchronous route or menu animation.
+        target.first().waitFor(new Locator.WaitForOptions()
+            .setTimeout(limits.actionTimeout().toMillis()));
+      } catch (RuntimeException waitFailure) {
+        if ("TimeoutError".equals(waitFailure.getClass().getSimpleName())) {
+          throw new BrowserActionException("LOCATOR_NOT_FOUND", "semantic locator was not found");
+        }
+        throw waitFailure;
+      }
       int matches = target.count();
       r.trace().add("LOCATOR_MATCHES:" + matches);
       if (matches == 0) throw new BrowserActionException("LOCATOR_NOT_FOUND", "semantic locator did not match");
       if (matches > 1) throw new BrowserActionException("LOCATOR_AMBIGUOUS", "semantic locator matched multiple elements");
-      target.click();
+      target.click(new Locator.ClickOptions().setTimeout(limits.actionTimeout().toMillis()));
     });
   }
   public synchronized OperationResult fill(UUID id, FillCommand c) { return execute(id, c.taskId(), "FILL:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).fill(c.value())); }
@@ -167,6 +182,13 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     if (expected == null) return;
     if (expected.path() != null && !URI.create(page.url()).getPath().equals(expected.path())) throw new BrowserActionException("EXPECTED_URL_NOT_REACHED", "expected route was not reached");
     if (expected.requiredText() != null && !accessibilityText(page).contains(expected.requiredText())) throw new BrowserActionException("EXPECTED_STATE_NOT_REACHED", "expected accessibility state was not reached");
+  }
+  private ExpectedState loginExpected(LoginCredential credential, URI base) {
+    ExpectedState expected = credential.expected();
+    if (credential.loginPath() == null || credential.loginPath().isBlank()) return expected;
+    URI postLogin = resolve(base, credential.loginPath());
+    policy.validate(postLogin, base);
+    return new ExpectedState(postLogin.getPath(), expected == null ? null : expected.requiredText());
   }
   private Locator locator(Page page, LocatorSpec spec) {
     if (spec == null || spec.name() == null || spec.name().isBlank()) throw new BrowserActionException("LOCATOR_INVALID", "a semantic locator is required");

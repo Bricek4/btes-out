@@ -28,7 +28,7 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
       if (profiles instanceof List<?> rows) for (Object row : rows) if (row instanceof Map<?,?> values && profileReference.equals(String.valueOf(values.get("reference")))) { profileId=UUID.fromString(String.valueOf(values.get("id"))); break; }
       if (profileId == null) throw new IllegalArgumentException("login profile is not present in task browser context");
       Map<?,?> credential = post("/internal/tasks/" + taskId + "/login-profiles/" + profileId + "/credential", Map.of());
-      return new LoginCredential(String.valueOf(credential.get("loginPath")), String.valueOf(credential.get("username")), String.valueOf(credential.get("password")),
+      return new LoginCredential(text(credential, "loginUrl"), text(credential, "loginPath"), text(credential, "username"), text(credential, "password"),
           locator(credential.get("usernameLocator")), locator(credential.get("passwordLocator")), locator(credential.get("submitLocator")), ExpectedState.none());
     } catch (Exception e) { throw new IllegalStateException("login credential resolution failed"); }
   }
@@ -57,5 +57,9 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
     if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED");
   }
   private LocatorSpec locator(Object value) throws tools.jackson.core.JacksonException { LoginLocator locator=json.convertValue(value, LoginLocator.class); return new LocatorSpec(locator.kind(), locator.role(), locator.name()); }
+  private static String text(Map<?,?> values, String key) {
+    Object value = values.get(key);
+    return value instanceof String string ? string : "";
+  }
   private static String sha256(String input) { try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); } }
 }

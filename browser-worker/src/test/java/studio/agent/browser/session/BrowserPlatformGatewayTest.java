@@ -23,7 +23,7 @@ class BrowserPlatformGatewayTest {
     var seen = new ArrayList<String>();
     server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
     server.createContext("/internal/worker-context/browser/" + task, e -> { seen.add("context:" + auth(e)); json(e, "{\"loginProfiles\":[{\"id\":\""+profile+"\",\"reference\":\"admin\"}]}"); });
-    server.createContext("/internal/tasks/" + task + "/login-profiles/" + profile + "/credential", e -> { seen.add("credential:" + auth(e)); json(e, "{\"loginPath\":\"/login\",\"username\":\"user@example.test\",\"password\":\"secret\",\"usernameLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Email\"},\"passwordLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Password\"},\"submitLocator\":{\"kind\":\"role\",\"role\":\"button\",\"name\":\"Sign in\"}}"); });
+    server.createContext("/internal/tasks/" + task + "/login-profiles/" + profile + "/credential", e -> { seen.add("credential:" + auth(e)); json(e, "{\"loginUrl\":\"http://127.0.0.1:"+server.getAddress().getPort()+"/auth/login\",\"loginPath\":\"/dashboard\",\"username\":\"user@example.test\",\"password\":\"secret\",\"usernameLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Email\"},\"passwordLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Password\"},\"submitLocator\":{\"kind\":\"role\",\"role\":\"button\",\"name\":\"Sign in\"}}"); });
     server.createContext("/internal/tasks/" + task + "/artifacts/presign", e -> { String body = new String(e.getRequestBody().readAllBytes(), StandardCharsets.UTF_8); seen.add("presign:"+auth(e)+":"+field(body,"idempotencyKey")); json(e, "{\"artifactId\":\""+artifact+"\",\"reservationId\":\""+reservation+"\",\"idempotencyKey\":\""+field(body,"idempotencyKey")+"\",\"putUrl\":\"http://127.0.0.1:"+server.getAddress().getPort()+"/put\"}"); });
     server.createContext("/put", e -> {
       seen.add("put:"+e.getRequestHeaders().getFirst("x-amz-checksum-sha256"));
@@ -35,6 +35,8 @@ class BrowserPlatformGatewayTest {
     server.start();
     var gateway = new BrowserPlatformGateway("http://127.0.0.1:" + server.getAddress().getPort(), "browser-token");
     var credential = gateway.resolve(task,"admin");
+    assertThat(credential.loginUrl()).isEqualTo("http://127.0.0.1:" + server.getAddress().getPort() + "/auth/login");
+    assertThat(credential.loginPath()).isEqualTo("/dashboard");
     assertThat(credential.usernameLocator()).isEqualTo(LocatorSpec.label("Email"));
     assertThat(credential.submitLocator()).isEqualTo(LocatorSpec.role("button","Sign in"));
     var published = new PublishedArtifact("artifact://"+task+"/admin-marker/image.png", new byte[]{1,2,3}, "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81");

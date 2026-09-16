@@ -29,31 +29,11 @@ class PlaywrightBrowserServiceTest {
   @BeforeAll
   static void startFixture() throws IOException {
     fixture = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-    fixture.createContext("/login", exchange -> {
-      if (exchange.getRequestMethod().equals("POST")) {
-        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        String role = body.contains("admin%40example.test") && body.contains("admin-secret") ? "admin"
-            : body.contains("member%40example.test") && body.contains("member-secret") ? "member" : null;
-        if (role == null) {
-          respond(exchange, 401, "<h1>Login failed</h1><p>Invalid credentials</p>");
-        } else {
-          exchange.getResponseHeaders().add("Set-Cookie", "fixture-role=" + role + "; Path=/; HttpOnly; SameSite=Lax");
-          exchange.getResponseHeaders().add("Location", "/app");
-          exchange.sendResponseHeaders(303, -1);
-          exchange.close();
-        }
-        return;
-      }
-      respond(exchange, 200, """
-          <main><h1>Sign in</h1><form method='post'>
-          <label>Email <input name='email' type='email'></label>
-          <label>Password <input name='password' type='password'></label>
-          <button type='submit'>Sign in</button></form></main>
-          """);
-    });
+    fixture.createContext("/login", PlaywrightBrowserServiceTest::handleLogin);
+    fixture.createContext("/auth/login", PlaywrightBrowserServiceTest::handleLogin);
     fixture.createContext("/app", exchange -> {
       String role = cookie(exchange, "fixture-role");
-      if (role == null) { redirect(exchange, "/login"); return; }
+      if (role == null) { respond(exchange, 401, "<h1>Unauthorized</h1>"); return; }
       respond(exchange, 200, page(role, "Home", "Ready"));
     });
     fixture.createContext("/reports/admin", exchange -> {
@@ -65,6 +45,11 @@ class PlaywrightBrowserServiceTest {
       respond(exchange, 200, page("member", "My activity", "Profile ready"));
     });
     fixture.createContext("/missing", exchange -> respond(exchange, 404, "<h1>Missing page</h1>"));
+    fixture.createContext("/delayed", exchange -> respond(exchange, 200, """
+        <main><h1>Delayed controls</h1>
+        <script>setTimeout(() => { const button = document.createElement('button'); button.textContent = 'Delayed action'; document.body.append(button); }, 250);</script>
+        </main>
+        """));
     fixture.start();
     baseUrl = URI.create("http://localhost:" + fixture.getAddress().getPort());
   }
@@ -150,6 +135,23 @@ class PlaywrightBrowserServiceTest {
     }
   }
 
+  @Test
+  void waitsForAnAsynchronouslyRenderedUniqueLocatorBeforeClicking() {
+    try (Playwright playwright = Playwright.create()) {
+      var service = service(playwright, profileCredentials(), artifact -> {});
+      UUID taskId = UUID.randomUUID();
+      UUID session = service.open(new OpenSessionCommand(taskId, baseUrl, "admin")).sessionId();
+      service.navigate(session, new NavigateCommand(taskId, "/delayed", ExpectedState.none()));
+
+      var click = service.click(session,
+          new ClickCommand(taskId, LocatorSpec.role("button", "Delayed action"), ExpectedState.none()));
+
+      assertThat(click.status()).isEqualTo(OperationStatus.SUCCEEDED);
+      assertThat(click.trace()).anyMatch(value -> value.startsWith("LOCATOR_MATCHES:1"));
+      service.closeAll();
+    }
+  }
+
   private static PlaywrightBrowserService service(Playwright playwright,
       Map<String, LoginCredential> credentials, ArtifactPublisher publisher) {
     var policy = new NavigationPolicy(true, List.of("localhost"), List.of(),
@@ -163,13 +165,13 @@ class PlaywrightBrowserServiceTest {
 
   private static Map<String, LoginCredential> profileCredentials() {
     return Map.of(
-        "admin", new LoginCredential("/login", "admin@example.test", "admin-secret",
+        "admin", new LoginCredential("/auth/login", "/app", "admin@example.test", "admin-secret",
             LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
             new ExpectedState("/app", "admin workspace")),
-        "member", new LoginCredential("/login", "member@example.test", "member-secret",
+        "member", new LoginCredential("/login", "/app", "member@example.test", "member-secret",
             LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
             new ExpectedState("/app", "member workspace")),
-        "bad-profile", new LoginCredential("/login", "admin@example.test", "wrong-secret",
+        "bad-profile", new LoginCredential("/auth/login", "/app", "admin@example.test", "wrong-secret",
             LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
             new ExpectedState("/app", "admin workspace")));
   }
@@ -190,6 +192,29 @@ class PlaywrightBrowserServiceTest {
         .flatMap(value -> List.of(value.split(";[ ]*")).stream())
         .filter(value -> value.startsWith(name + "=")).map(value -> value.substring(name.length() + 1))
         .findFirst().orElse(null);
+  }
+
+  private static void handleLogin(HttpExchange exchange) throws IOException {
+    if (exchange.getRequestMethod().equals("POST")) {
+      String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+      String role = body.contains("admin%40example.test") && body.contains("admin-secret") ? "admin"
+          : body.contains("member%40example.test") && body.contains("member-secret") ? "member" : null;
+      if (role == null) {
+        respond(exchange, 401, "<h1>Login failed</h1><p>Invalid credentials</p>");
+      } else {
+        exchange.getResponseHeaders().add("Set-Cookie", "fixture-role=" + role + "; Path=/; HttpOnly; SameSite=Lax");
+        exchange.getResponseHeaders().add("Location", "/app");
+        exchange.sendResponseHeaders(303, -1);
+        exchange.close();
+      }
+      return;
+    }
+    respond(exchange, 200, """
+        <main><h1>Sign in</h1><form method='post'>
+        <label>Email <input name='email' type='email'></label>
+        <label>Password <input name='password' type='password'></label>
+        <button type='submit'>Sign in</button></form></main>
+        """);
   }
 
   private static void redirect(HttpExchange exchange, String path) throws IOException {
