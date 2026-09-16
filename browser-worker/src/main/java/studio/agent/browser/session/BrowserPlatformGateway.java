@@ -34,7 +34,9 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
   @Override public void publish(PublishedArtifact artifact) {
     try {
       URI ref = URI.create(artifact.reference()); String[] parts = ref.getPath().split("/"); UUID taskId=UUID.fromString(ref.getHost());
-      Map<?,?> reserved=post("/internal/tasks/"+taskId+"/artifacts/presign", Map.of("name",parts[2],"kind","SCREENSHOT","mediaType","image/png","sizeBytes",artifact.bytes().length,"sha256",artifact.sha256()));
+      String key = sha256(taskId + "\\n" + parts[1] + "\\n" + artifact.sha256());
+      Map<?,?> reserved=post("/internal/tasks/"+taskId+"/artifacts/presign", Map.of("name",parts[2],"kind","SCREENSHOT","mediaType","image/png","sizeBytes",artifact.bytes().length,"sha256",artifact.sha256(),"idempotencyKey",key));
+      if (!key.equals(String.valueOf(reserved.get("idempotencyKey")))) throw new IllegalStateException("ARTIFACT_RESERVATION_INVALID");
       put(URI.create(String.valueOf(reserved.get("putUrl"))), artifact.bytes(), artifact.sha256());
       post("/internal/tasks/"+taskId+"/artifacts/"+reserved.get("artifactId")+"/complete", Map.of("manifest","{}", "reservationId", String.valueOf(reserved.get("reservationId"))));
     } catch (Exception e) { throw new IllegalStateException("ARTIFACT_PUBLICATION_FAILED"); }
@@ -44,4 +46,5 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
   private Map<?,?> send(HttpRequest request) throws Exception { var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray()); if(response.body().length>MAX_RESPONSE_BYTES) throw new IllegalStateException("PLATFORM_RESPONSE_TOO_LARGE"); if(response.statusCode()/100!=2) throw new IllegalStateException("PLATFORM_REQUEST_REJECTED"); return json.readValue(response.body(),Map.class); }
   private void put(URI url,byte[] bytes,String sha256) throws Exception { String checksum=java.util.Base64.getEncoder().encodeToString(java.util.HexFormat.of().parseHex(sha256)); var response=http.send(HttpRequest.newBuilder(url).timeout(REQUEST_TIMEOUT).header("x-amz-checksum-sha256",checksum).PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),HttpResponse.BodyHandlers.discarding()); if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED"); }
   private static LocatorSpec parseLocator(String value) { String[] p=value.split(":",3); if(p.length==3&&"role".equals(p[0]))return LocatorSpec.role(p[1],p[2]); if(p.length==2&&"label".equals(p[0]))return LocatorSpec.label(p[1]); if(p.length==2&&"test-id".equals(p[0]))return LocatorSpec.testId(p[1]); return LocatorSpec.label(value); }
+  private static String sha256(String input) { try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); } }
 }
