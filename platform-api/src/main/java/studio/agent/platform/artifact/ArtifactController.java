@@ -56,7 +56,7 @@ public class ArtifactController {
                                 @RequestParam(required = false) Integer version) {
     var stored = artifacts.readableVersion(user, artifactId, version);
     StreamingResponseBody body = output -> artifacts.streamDownload(stored, output);
-    return ResponseEntity.ok().contentType(safeMediaType(stored.mediaType()))
+    return ResponseEntity.ok().contentType(safePreviewMediaType(stored.mediaType()))
         .cacheControl(CacheControl.noStore()).header(HttpHeaders.CONTENT_DISPOSITION,
             ContentDisposition.attachment().filename(stored.name(), StandardCharsets.UTF_8).build().toString())
         .header("X-Content-Type-Options", "nosniff").body(body);

@@ -1,9 +1,8 @@
 package studio.agent.platform.security;
 
-import java.security.Principal;
 import java.util.UUID;
 
-public record CurrentUser(UUID id, UUID organizationId, String email, String role) implements Principal {
-  @Override public String getName() { return id.toString(); }
+/** Authenticated application identity used by the explicit MVC argument resolver. */
+public record CurrentUser(UUID id, UUID organizationId, String email, String role) {
   public boolean admin() { return "ADMIN".equals(role); }
 }

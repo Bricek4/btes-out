@@ -228,7 +228,7 @@ export const api = {
   }),
   testProvider: (providerId: string) => request<{ ok: boolean; statusCode: number; latencyMillis: number; modelCount: number; code?: string }>(`/api/v1/providers/${providerId}/test`, { method: 'POST' }),
   discoverProviderModels: (providerId: string) => request<Array<{ modelId: string; displayName: string }>>(`/api/v1/providers/${providerId}/models/discover`, { method: 'POST' }),
-  deleteProviderModel: (providerId: string, modelId: string) => request<void>(`/api/v1/providers/${providerId}/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' }),
+  deleteProviderModel: (providerId: string, modelId: string) => request<void>(`/api/v1/providers/${providerId}/models?modelId=${encodeURIComponent(modelId)}`, { method: 'DELETE' }),
   taskArtifacts: (taskId: string) => request<ArtifactNode[]>(`/api/v1/tasks/${taskId}/artifacts`),
   artifact: (artifactId: string) => request<ArtifactDetail>(`/api/v1/artifacts/${artifactId}`),
   previewArtifact: (artifactId: string, version?: number | null) => requestBlob(`/api/v1/artifacts/${artifactId}/preview${version ? `?version=${version}` : ''}`),

@@ -6,11 +6,19 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
 
 @Configuration
 class SecurityConfig {
+  @Bean UserDetailsService noPasswordLoginUsers() {
+    // Credentials are verified by SessionAuthenticationFilter against the database. Supplying an
+    // empty service prevents Spring Boot from generating and advertising a development password.
+    return username -> { throw new UsernameNotFoundException("database session authentication is required"); };
+  }
+
   @Bean FilterRegistrationBean<SessionAuthenticationFilter> disableServletRegistration(SessionAuthenticationFilter filter) {
     var registration = new FilterRegistrationBean<>(filter);
     registration.setEnabled(false);
