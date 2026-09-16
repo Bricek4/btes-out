@@ -13,4 +13,29 @@ The platform is built as four Java services with a Vue 3 frontend. Its local sta
 
 ## Development
 
-See the module structure and local run instructions as they are added. Never commit credentials or `.env` files.
+## Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `contracts` | Domain states, DTOs, and the OpenAPI task contract. |
+| `platform-api` | HTTP API, persistence migrations, authorization, and task read model. |
+| `workflow-service` | Workflow orchestration boundary. |
+| `agent-worker` | Documentation-analysis worker boundary. |
+| `browser-worker` | Browser-screenshot worker boundary. |
+
+Services depend only on `contracts`; workers and workflow orchestration do not depend on
+`platform-api` or on each other.
+
+## Build
+
+JDK 21 is required. A Maven Wrapper is checked in because a system Maven installation is not
+required:
+
+```sh
+./mvnw test
+```
+
+The stable HTTP and SSE task contract is at
+[`contracts/openapi/agent-studio-api.yaml`](contracts/openapi/agent-studio-api.yaml). Task creation
+and cancellation require an `Idempotency-Key`; a repeated create request returns the previously
+accepted task. Never commit credentials or `.env` files.

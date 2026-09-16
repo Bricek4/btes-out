@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: Agent Studio API
+  version: 0.1.0
+  description: Task API contract. Authentication and authorization are implemented by platform-api.
+paths:
+  /v1/tasks:
+    post:
+      operationId: createTask
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '202':
+          description: Task accepted, or the task previously accepted for this idempotency key.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskSnapshot' }
+  /v1/tasks/{taskId}:
+    get:
+      operationId: getTask
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      responses:
+        '200': { description: Task state, content: { application/json: { schema: { $ref: '#/components/schemas/TaskSnapshot' } } } }
+        '404': { description: Task not found or unavailable to the caller }
+  /v1/tasks/{taskId}/events:
+    get:
+      operationId: streamTaskEvents
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Server-sent task events, ordered by per-task sequence.
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/TaskEvent' }
+  /v1/tasks/{taskId}/cancel:
+    post:
+      operationId: cancelTask
+      parameters: [ { $ref: '#/components/parameters/TaskId' }, { $ref: '#/components/parameters/IdempotencyKey' } ]
+      responses:
+        '202': { description: Cancellation accepted, content: { application/json: { schema: { $ref: '#/components/schemas/TaskSnapshot' } } } }
+components:
+  parameters:
+    TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+  schemas:
+    TaskType: { type: string, enum: [DOCUMENTATION, SCREENSHOT] }
+    TaskStatus: { type: string, enum: [QUEUED, RUNNING, WAITING_FOR_APPROVAL, SUCCEEDED, FAILED, CANCELED] }
+    CreateTaskRequest:
+      type: object
+      required: [projectId, type, inputReference]
+      properties:
+        projectId: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/TaskType' }
+        inputReference: { type: string, minLength: 1, description: Opaque source or configuration reference. }
+    TaskSnapshot:
+      type: object
+      required: [taskId, projectId, type, status, createdAt, updatedAt]
+      properties:
+        taskId: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/TaskType' }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        resultReference: { type: [string, 'null'] }
+        failureCode: { type: [string, 'null'] }
+    TaskEvent:
+      type: object
+      required: [taskId, sequence, status, occurredAt]
+      properties:
+        taskId: { type: string, format: uuid }
+        sequence: { type: integer, minimum: 1 }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        occurredAt: { type: string, format: date-time }
+        resultReference: { type: [string, 'null'] }
+        failureCode: { type: [string, 'null'] }
