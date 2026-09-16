@@ -18,7 +18,7 @@ import studio.agent.platform.security.CurrentUser;
 import studio.agent.platform.storage.ObjectStoreService;
 
 @Service
-final class ArtifactService {
+class ArtifactService {
   static final long MAX_PREVIEW_BYTES = 10L * 1024 * 1024;
   static final long MAX_REPLACEMENT_BYTES = 20L * 1024 * 1024;
   static final long MAX_EXPORT_BYTES = 100L * 1024 * 1024;
