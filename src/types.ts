@@ -14,6 +14,17 @@ export interface Project {
   ownerId?: string
   createdAt?: string
   hasRevision?: boolean
+  shared?: boolean
+}
+
+export interface ProjectRevision {
+  id: string
+  ordinal: number
+  sourceType: 'GIT' | 'ZIP'
+  branch?: string | null
+  commit?: string | null
+  sha256: string
+  createdAt: string
 }
 
 export interface Task {
@@ -50,7 +61,15 @@ export interface Provider {
   providerType: string
   baseUrl: string
   maskedApiKey?: string
+  credentialConfigured?: boolean
   isDefault?: boolean
+}
+
+export interface ProviderModel {
+  modelId: string
+  displayName: string
+  capabilities: string
+  defaultModel: boolean
 }
 
 export interface LoginLocator {
@@ -72,19 +91,55 @@ export interface LoginProfile {
 
 export interface TaskDraft {
   workflowType: TaskType
-  parameters: Record<string, string>
+  parameters: Record<string, string | number | boolean | null>
   summary: string
   taskReference?: string | null
 }
 
-export interface Artifact {
-  id: string
+export interface ArtifactNode {
+  name: string
+  path: string
+  type: 'FOLDER' | 'ARTIFACT'
+  artifactId?: string | null
+  kind?: string | null
+  version?: number | null
+  mediaType?: string | null
+  sizeBytes?: number | null
+  sha256?: string | null
+  children: ArtifactNode[]
+}
+
+export interface ArtifactVersion {
+  version: number
+  mediaType: string
+  sizeBytes: number
+  sha256: string
+  manifest?: unknown
+  verificationReport?: unknown
+  createdAt: string
+}
+
+export interface ArtifactDetail {
+  artifactId: string
+  taskId: string
   name: string
   kind: string
-  mediaType: string
-  sizeBytes?: number
-  version?: number
-  previewUrl?: string
+  currentVersion: number
+  versions: ArtifactVersion[]
+}
+
+export interface Member {
+  id: string
+  email: string
+}
+
+export interface ShareGrant {
+  id: string
+  resourceType: 'PROJECT' | 'ARTIFACT'
+  resourceId: string
+  member: Member
+  access: 'READ'
+  createdAt: string
 }
 
 export interface Approval {
@@ -93,4 +148,15 @@ export interface Approval {
   prompt: string
   choices?: string[]
   expiresAt?: string
+}
+
+export interface TemplateVersionInput {
+  outputFormat: 'MARKDOWN' | 'HTML'
+  parameterSchema: Record<string, unknown>
+  formLayout: Record<string, unknown>
+  allowedSections: string[]
+  markdownTemplate?: string | null
+  htmlTemplate?: string | null
+  css?: string | null
+  validationRules: Record<string, unknown>
 }
