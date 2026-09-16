@@ -26,9 +26,12 @@ import studio.agent.contracts.WorkerTaskRequest;
 import studio.agent.contracts.WorkerTaskResult;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Executes a task from short-lived Platform context and returns only registered artifact references. */
 public final class WorkerExecutionService implements WorkerTaskExecutor {
+  private static final Logger LOG = LoggerFactory.getLogger(WorkerExecutionService.class);
   private static final int MAX_ARCHIVE_ENTRIES = 500;
   private static final int MAX_ENTRY_BYTES = 1_000_000;
   private static final int MAX_EVIDENCE_CHARS = 5_000_000;
@@ -82,8 +85,11 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     } catch (SpringAiModelGateway.ModelCallFailure failure) {
       return failed(request.taskId(), safeCode(failure.getMessage(), "MODEL_REQUEST_FAILED"));
     } catch (IllegalArgumentException failure) {
+      LOG.warn("agent execution validation failed: type={}, category={}",
+          failure.getClass().getSimpleName(), validationCategory(failure));
       return failed(request.taskId(), "AGENT_TASK_INVALID");
     } catch (RuntimeException failure) {
+      LOG.warn("agent execution failed: type={}", failure.getClass().getSimpleName());
       return failed(request.taskId(), "AGENT_EXECUTION_FAILED");
     }
   }
@@ -135,13 +141,19 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     ResolutionOutcome approvalCheck = validateApprovedCandidate(content, approvedReference);
     if (approvalCheck != null) return failed(request.taskId(), approvalCheck.failureCode());
     String manifest = manifest(request, "manifests/" + request.taskId() + ".json", content);
-    AgentPlatformClient.PublishedArtifact publishedManifest = publishManifest(request, manifest);
+    // Publish the plan before browsing so an approval request always has an auditable intent.
+    publishManifest(request, manifest);
     ResolutionOutcome resolved = resolveMarkers(request.taskId(), context, evidence, content, approvedReference);
     if (resolved.approval() != null) return new LocalWorkerResult(null, null, resolved.approval());
     if (resolved.failureCode() != null) return failed(request.taskId(), resolved.failureCode());
     List<String> references = screenshotReferences(resolved.content());
     if (references.isEmpty()) throw new PipelineFailure("SCREENSHOT_REFERENCE_MISSING");
-    String resultReference = references.size() == 1 ? references.getFirst() : publishedManifest.reference();
+    // The plan still contains unresolved markers. Publish a second immutable manifest after
+    // replacement and return it for multi-screenshot jobs, so the result always describes the
+    // artifacts that were actually captured.
+    AgentPlatformClient.PublishedArtifact finalManifest = publishManifest(request,
+        manifest(request, "manifests/" + request.taskId() + ".json", resolved.content()));
+    String resultReference = references.size() == 1 ? references.getFirst() : finalManifest.reference();
     return succeeded(request.taskId(), resultReference);
   }
 
@@ -330,6 +342,17 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
 
   private static String safeCode(String value, String fallback) {
     return value != null && value.matches("[A-Z][A-Z0-9_]{2,80}") ? value : fallback;
+  }
+
+  private static String validationCategory(IllegalArgumentException failure) {
+    String message = failure.getMessage();
+    if (message == null) return "UNSPECIFIED";
+    String lower = message.toLowerCase(Locale.ROOT);
+    if (lower.contains("model") || lower.contains("provider")) return "MODEL_INPUT";
+    if (lower.contains("source") || lower.contains("archive")) return "SOURCE_INPUT";
+    if (lower.contains("template") || lower.contains("render")) return "TEMPLATE_INPUT";
+    if (lower.contains("marker") || lower.contains("screenshot")) return "MARKER_INPUT";
+    return "REQUEST_INPUT";
   }
 
   private static LocalWorkerResult succeeded(UUID taskId, String reference) {

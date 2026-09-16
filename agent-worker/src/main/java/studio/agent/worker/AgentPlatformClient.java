@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.StreamingHttpOutputMessage;
 import org.springframework.web.client.RestClient;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
@@ -118,10 +119,12 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
       String idempotencyKey) {
     Map<?, ?> reservation;
     try {
+      byte[] requestBody = JSON.writeValueAsBytes(Map.of("name", upload.name(), "kind", upload.kind().name(),
+          "mediaType", upload.mediaType(), "sizeBytes", bytes.length, "sha256", sha256,
+          "idempotencyKey", idempotencyKey));
       reservation = platform.post().uri("/internal/tasks/{taskId}/artifacts/presign", taskId)
-          .header(HttpHeaders.AUTHORIZATION, bearer())
-          .body(Map.of("name", upload.name(), "kind", upload.kind().name(), "mediaType", upload.mediaType(),
-              "sizeBytes", bytes.length, "sha256", sha256, "idempotencyKey", idempotencyKey))
+          .header(HttpHeaders.AUTHORIZATION, bearer()).contentType(MediaType.APPLICATION_JSON)
+          .contentLength(requestBody.length).body(rawBody(requestBody))
           .retrieve().body(Map.class);
     } catch (RuntimeException failure) {
       throw new PlatformOperationException("ARTIFACT_RESERVATION_FAILED");
@@ -145,9 +148,11 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
     }
     Map<?, ?> completed;
     try {
+      byte[] completionBody = JSON.writeValueAsBytes(Map.of("reservationId", reservationId.toString(),
+          "manifest", upload.manifest()));
       completed = platform.post().uri("/internal/tasks/{taskId}/artifacts/{artifactId}/complete", taskId, artifactId)
-          .header(HttpHeaders.AUTHORIZATION, bearer())
-          .body(Map.of("reservationId", reservationId.toString(), "manifest", upload.manifest()))
+          .header(HttpHeaders.AUTHORIZATION, bearer()).contentType(MediaType.APPLICATION_JSON)
+          .contentLength(completionBody.length).body(rawBody(completionBody))
           .retrieve().body(Map.class);
     } catch (RuntimeException failure) {
       throw new PlatformOperationException("ARTIFACT_COMPLETION_FAILED");
@@ -164,6 +169,10 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
     String canonical = key.taskId() + "\n" + key.name() + "\n" + key.kind() + "\n"
         + key.mediaType() + "\n" + key.sha256() + "\n" + key.manifestSha256();
     return sha256(canonical.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static StreamingHttpOutputMessage.Body rawBody(byte[] bytes) {
+    return output -> output.write(bytes);
   }
 
   private static Map<String, Object> options(Object value) {

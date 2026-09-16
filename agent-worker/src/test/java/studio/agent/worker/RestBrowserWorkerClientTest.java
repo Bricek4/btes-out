@@ -40,6 +40,7 @@ class RestBrowserWorkerClientTest {
 
       CapturedRequest fill = requests.stream().filter(r -> r.path().endsWith("/fill")).findFirst().orElseThrow();
       assertEquals("Bearer agent-secret", fill.authorization());
+      assertEquals("application/json", fill.contentType());
       assertEquals(taskId.toString(), fill.body().get("taskId"));
       assertEquals("ada@example.test", fill.body().get("value"));
       assertEquals(Map.of("kind", "label", "name", "Email"), fill.body().get("locator"));
@@ -84,7 +85,8 @@ class RestBrowserWorkerClientTest {
     byte[] input = exchange.getRequestBody().readAllBytes();
     Map<String, Object> body = input.length == 0 ? Map.of() : JSON.readValue(input, STRING_OBJECT_MAP);
     requests.add(new CapturedRequest(exchange.getRequestMethod(), exchange.getRequestURI().getPath(),
-        exchange.getRequestHeaders().getFirst("Authorization"), body));
+        exchange.getRequestHeaders().getFirst("Authorization"),
+        exchange.getRequestHeaders().getFirst("Content-Type"), body));
     String path = exchange.getRequestURI().getPath();
     if ("DELETE".equals(exchange.getRequestMethod())) {
       exchange.sendResponseHeaders(204, -1);
@@ -103,5 +105,6 @@ class RestBrowserWorkerClientTest {
     exchange.close();
   }
 
-  private record CapturedRequest(String method, String path, String authorization, Map<String, Object> body) { }
+  private record CapturedRequest(String method, String path, String authorization, String contentType,
+                                 Map<String, Object> body) { }
 }

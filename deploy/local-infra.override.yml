@@ -1,0 +1,13 @@
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+  minio:
+    ports:
+      - "9000:9000"
+  mailpit:
+    ports:
+      - "1025:1025"
+  temporal-postgres:
+    ports:
+      - "5433:5432"

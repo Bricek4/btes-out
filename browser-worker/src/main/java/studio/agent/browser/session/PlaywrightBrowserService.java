@@ -18,11 +18,14 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import studio.agent.browser.security.NavigationPolicy;
 import studio.agent.browser.security.NavigationRejectedException;
 
 /** Executes only declarative, semantic browser operations; never evaluates user supplied JavaScript. */
 public final class PlaywrightBrowserService implements AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(PlaywrightBrowserService.class);
   private record RuntimeSession(BrowserContext context, Page page, List<String> trace, Set<String> secrets) {}
 
   private final Browser browser;
@@ -45,7 +48,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     this.credentials = credentials; this.artifacts = artifacts; this.limits = limits;
   }
 
-  public OpenSessionResult open(OpenSessionCommand command) {
+  public synchronized OpenSessionResult open(OpenSessionCommand command) {
     BrowserContext context = null;
     try {
       policy.validate(command.baseUrl(), null);
@@ -71,7 +74,7 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     return new OpenSessionResult(null, c.taskId(), c.loginProfileReference(), OperationStatus.FAILED, error(e));
   }
 
-  public OperationResult login(UUID sessionId, UUID taskId) {
+  public synchronized OperationResult login(UUID sessionId, UUID taskId) {
     OperationResult result = execute(sessionId, taskId, "LOGIN", ExpectedState.none(), runtime -> {
       var session = registry.require(sessionId, taskId);
       LoginCredential credential = credentials.resolve(taskId, session.profileReference());
@@ -90,25 +93,34 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     return result;
   }
 
-  public OperationResult snapshot(UUID sessionId, UUID taskId) {
+  public synchronized OperationResult snapshot(UUID sessionId, UUID taskId) {
     var session = registry.require(sessionId, taskId); RuntimeSession runtime = runtime(sessionId);
     String snapshot = redactedSnapshot(runtime.page(), runtime.secrets());
     return new OperationResult(OperationStatus.SUCCEEDED, runtime.page().url(), snapshot, List.copyOf(runtime.trace()), null);
   }
 
-  public OperationResult navigate(UUID id, NavigateCommand c) {
+  public synchronized OperationResult navigate(UUID id, NavigateCommand c) {
     return execute(id, c.taskId(), "NAVIGATE", c.expected(), runtime -> {
       var session = registry.require(id, c.taskId()); navigate(runtime.page(), resolve(session.baseUrl(), c.target()), session.baseUrl());
     });
   }
-  public OperationResult click(UUID id, ClickCommand c) { return execute(id, c.taskId(), "CLICK:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).click()); }
-  public OperationResult fill(UUID id, FillCommand c) { return execute(id, c.taskId(), "FILL:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).fill(c.value())); }
-  public OperationResult select(UUID id, SelectCommand c) { return execute(id, c.taskId(), "SELECT:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).selectOption(new SelectOption().setValue(c.value()))); }
-  public OperationResult check(UUID id, CheckCommand c) { return execute(id, c.taskId(), "CHECK:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).check()); }
-  public OperationResult uncheck(UUID id, CheckCommand c) { return execute(id, c.taskId(), "UNCHECK:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).uncheck()); }
-  public OperationResult waitFor(UUID id, WaitCommand c) { return execute(id, c.taskId(), "WAIT:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).waitFor()); }
+  public synchronized OperationResult click(UUID id, ClickCommand c) {
+    return execute(id, c.taskId(), "CLICK:" + safe(c.locator()), c.expected(), r -> {
+      Locator target = locator(r.page(), c.locator());
+      int matches = target.count();
+      r.trace().add("LOCATOR_MATCHES:" + matches);
+      if (matches == 0) throw new BrowserActionException("LOCATOR_NOT_FOUND", "semantic locator did not match");
+      if (matches > 1) throw new BrowserActionException("LOCATOR_AMBIGUOUS", "semantic locator matched multiple elements");
+      target.click();
+    });
+  }
+  public synchronized OperationResult fill(UUID id, FillCommand c) { return execute(id, c.taskId(), "FILL:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).fill(c.value())); }
+  public synchronized OperationResult select(UUID id, SelectCommand c) { return execute(id, c.taskId(), "SELECT:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).selectOption(new SelectOption().setValue(c.value()))); }
+  public synchronized OperationResult check(UUID id, CheckCommand c) { return execute(id, c.taskId(), "CHECK:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).check()); }
+  public synchronized OperationResult uncheck(UUID id, CheckCommand c) { return execute(id, c.taskId(), "UNCHECK:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).uncheck()); }
+  public synchronized OperationResult waitFor(UUID id, WaitCommand c) { return execute(id, c.taskId(), "WAIT:" + safe(c.locator()), c.expected(), r -> locator(r.page(), c.locator()).waitFor()); }
 
-  public ScreenshotResult screenshot(UUID id, ScreenshotCommand c) {
+  public synchronized ScreenshotResult screenshot(UUID id, ScreenshotCommand c) {
     OperationResult validation = execute(id, c.taskId(), "SCREENSHOT:" + c.markerId(), c.expected(), runtime -> {});
     var session = registry.require(id, c.taskId()); RuntimeSession runtime = runtime(id);
     if (validation.status() == OperationStatus.FAILED) return new ScreenshotResult(c.markerId(), session.profileReference(), validation.reachedUrl(), null, OperationStatus.FAILED, validation.error(), validation.trace());
@@ -124,8 +136,8 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     }
   }
 
-  public void close(UUID id, UUID taskId) { registry.remove(id, taskId); }
-  public void closeAll() { registry.closeAll(); try { browser.close(); } finally { if (playwright != null) playwright.close(); } }
+  public synchronized void close(UUID id, UUID taskId) { registry.remove(id, taskId); }
+  public synchronized void closeAll() { registry.closeAll(); try { browser.close(); } finally { if (playwright != null) playwright.close(); } }
   @Override public void close() { closeAll(); }
 
   private OperationResult execute(UUID id, UUID taskId, String action, ExpectedState expected, ThrowingAction operation) {
@@ -140,6 +152,11 @@ public final class PlaywrightBrowserService implements AutoCloseable {
       }
     } catch (RuntimeException exception) {
       runtime.trace().add(action + ":FAILED:" + error(exception).code());
+      LOG.warn("browser action failed: actionHash={}, code={}, url={}, snapshotHash={}, matchTrace={}",
+          actionHash(action), error(exception).code(), safeUrl(runtime.page()),
+          actionHash(accessibilityText(runtime.page())), runtime.trace().stream()
+              .filter(value -> value.startsWith("LOCATOR_MATCHES:"))
+              .reduce((first, second) -> second).orElse("unknown"));
       return new OperationResult(OperationStatus.FAILED, runtime.page().url(), redactedSnapshot(runtime.page(), runtime.secrets()), List.copyOf(runtime.trace()), error(exception));
     }
   }
@@ -149,25 +166,69 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     policy.validate(URI.create(page.url()), base);
     if (expected == null) return;
     if (expected.path() != null && !URI.create(page.url()).getPath().equals(expected.path())) throw new BrowserActionException("EXPECTED_URL_NOT_REACHED", "expected route was not reached");
-    if (expected.requiredText() != null && !page.locator("body").ariaSnapshot().contains(expected.requiredText())) throw new BrowserActionException("EXPECTED_STATE_NOT_REACHED", "expected accessibility state was not reached");
+    if (expected.requiredText() != null && !accessibilityText(page).contains(expected.requiredText())) throw new BrowserActionException("EXPECTED_STATE_NOT_REACHED", "expected accessibility state was not reached");
   }
   private Locator locator(Page page, LocatorSpec spec) {
     if (spec == null || spec.name() == null || spec.name().isBlank()) throw new BrowserActionException("LOCATOR_INVALID", "a semantic locator is required");
     return switch (spec.kind()) {
       case "label" -> page.getByLabel(spec.name()); case "test-id" -> page.getByTestId(spec.name());
-      case "role" -> page.getByRole(AriaRole.valueOf(spec.role().toUpperCase().replace('-', '_')), new Page.GetByRoleOptions().setName(spec.name()));
+      case "role" -> page.getByRole(AriaRole.valueOf(spec.role().toUpperCase().replace('-', '_')),
+          new Page.GetByRoleOptions().setName(spec.name()).setExact(true));
       default -> throw new BrowserActionException("LOCATOR_INVALID", "unsupported locator kind");
     };
   }
   private static URI resolve(URI base, String target) { try { return base.resolve(target); } catch (RuntimeException e) { throw new BrowserActionException("INVALID_TARGET_URL", "target URL is invalid"); } }
-  private static String redactedSnapshot(Page page, Set<String> secrets) { return SnapshotRedactor.redact(page.locator("body").ariaSnapshot(), secrets); }
+  private String redactedSnapshot(Page page, Set<String> secrets) {
+    return SnapshotRedactor.redact(accessibilityText(page), secrets);
+  }
+
+  /**
+   * Accessibility snapshots are useful evidence but should never hold an HTTP request open
+   * indefinitely. If Playwright cannot produce the tree before the configured deadline, plain
+   * body text is a bounded fallback so semantic target checks can still succeed.
+   */
+  private String accessibilityText(Page page) {
+    if (page == null || page.isClosed()) return "";
+    Locator body = page.locator("body");
+    try {
+      return body.ariaSnapshot(new Locator.AriaSnapshotOptions()
+          .setTimeout(limits.snapshotTimeout().toMillis()));
+    } catch (RuntimeException snapshotFailure) {
+      try {
+        long fallbackMillis = Math.max(100L, Math.min(1_000L, limits.snapshotTimeout().toMillis() / 2));
+        return body.innerText(new Locator.InnerTextOptions().setTimeout(fallbackMillis));
+      } catch (RuntimeException fallbackFailure) {
+        return "";
+      }
+    }
+  }
   private static String safe(LocatorSpec spec) { return spec == null ? "invalid" : spec.kind() + ":" + spec.role() + ":" + spec.name(); }
+  private static String actionHash(String action) {
+    try {
+      return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+          .digest(String.valueOf(action).getBytes(java.nio.charset.StandardCharsets.UTF_8))).substring(0, 12);
+    } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
+  }
+
+  private static String safeUrl(Page page) {
+    try { return page == null || page.isClosed() ? "closed" : URI.create(page.url()).getPath(); }
+    catch (RuntimeException invalid) { return "invalid"; }
+  }
   private static String safeFilename(String name) { if (name == null || !name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.png")) throw new BrowserActionException("INVALID_FILENAME", "screenshot filename must be a simple .png name"); return name; }
   private static String sha256(byte[] bytes) {
     try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
     catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
   }
-  private static BrowserError error(RuntimeException e) { if (e instanceof BrowserActionException b) return new BrowserError(b.code, b.message); if (e instanceof NavigationRejectedException n) return new BrowserError(n.code(), "navigation rejected"); if (e instanceof SessionAccessException s) return new BrowserError(s.code(), "session access rejected"); if (e.getClass().getName().startsWith("com.microsoft.playwright")) return new BrowserError("LOCATOR_NOT_FOUND", "semantic locator was not found or actionable"); return new BrowserError("BROWSER_ACTION_FAILED", "browser action failed"); }
+  private static BrowserError error(RuntimeException e) {
+    if (e instanceof BrowserActionException b) return new BrowserError(b.code, b.message);
+    if (e instanceof NavigationRejectedException n) return new BrowserError(n.code(), "navigation rejected");
+    if (e instanceof SessionAccessException s) return new BrowserError(s.code(), "session access rejected");
+    String type = e.getClass().getSimpleName();
+    if ("TimeoutError".equals(type)) return new BrowserError("LOCATOR_NOT_FOUND", "semantic locator was not found or actionable");
+    if ("TargetClosedError".equals(type)) return new BrowserError("BROWSER_RUNTIME_FAILED", "browser target closed unexpectedly");
+    if (e.getClass().getName().startsWith("com.microsoft.playwright")) return new BrowserError("BROWSER_ACTION_FAILED", "browser action failed");
+    return new BrowserError("BROWSER_ACTION_FAILED", "browser action failed");
+  }
   @FunctionalInterface private interface ThrowingAction { void run(RuntimeSession runtime); }
   private static final class BrowserActionException extends RuntimeException { final String code; final String message; BrowserActionException(String code, String message) { this.code = code; this.message = message; } }
 }

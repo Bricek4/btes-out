@@ -9,9 +9,12 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Spring AI OpenAI-compatible gateway, created per task and with prompt observations disabled. */
 public final class SpringAiModelGateway implements ArtifactGenerationService.ModelGateway {
+  private static final Logger LOG = LoggerFactory.getLogger(SpringAiModelGateway.class);
   private final ChatModel model;
 
   public SpringAiModelGateway(ProviderConnection provider) {
@@ -43,6 +46,7 @@ public final class SpringAiModelGateway implements ArtifactGenerationService.Mod
       return response.getResult().getOutput().getText();
     } catch (RuntimeException providerFailure) {
       // SDK exception bodies can echo request details. Keep the failure code only.
+      LOG.warn("model request failed: type={}", providerFailure.getClass().getSimpleName());
       throw new ModelCallFailure("MODEL_REQUEST_FAILED");
     }
   }

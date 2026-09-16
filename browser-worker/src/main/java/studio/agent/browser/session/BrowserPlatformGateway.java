@@ -45,7 +45,17 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
   private Map<?,?> get(String path) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).timeout(REQUEST_TIMEOUT).header("Authorization","Bearer "+token).GET().build()); }
   private Map<?,?> post(String path,Object body) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).timeout(REQUEST_TIMEOUT).header("Authorization","Bearer "+token).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body))).build()); }
   private Map<?,?> send(HttpRequest request) throws Exception { var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray()); if(response.body().length>MAX_RESPONSE_BYTES) throw new IllegalStateException("PLATFORM_RESPONSE_TOO_LARGE"); if(response.statusCode()/100!=2) throw new IllegalStateException("PLATFORM_REQUEST_REJECTED"); return json.readValue(response.body(),Map.class); }
-  private void put(URI url,byte[] bytes,String sha256) throws Exception { String checksum=java.util.Base64.getEncoder().encodeToString(java.util.HexFormat.of().parseHex(sha256)); var response=http.send(HttpRequest.newBuilder(url).timeout(REQUEST_TIMEOUT).header("x-amz-checksum-sha256",checksum).PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),HttpResponse.BodyHandlers.discarding()); if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED"); }
+  private void put(URI url,byte[] bytes,String sha256) throws Exception {
+    String checksum=java.util.Base64.getEncoder().encodeToString(java.util.HexFormat.of().parseHex(sha256));
+    var request = HttpRequest.newBuilder(url).timeout(REQUEST_TIMEOUT)
+        // These headers are part of the S3 presigned signature. Omitting them makes MinIO
+        // reject an otherwise valid screenshot upload with a generic 403.
+        .header("Content-Type", "image/png")
+        .header("x-amz-checksum-sha256", checksum)
+        .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build();
+    var response=http.send(request,HttpResponse.BodyHandlers.discarding());
+    if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED");
+  }
   private LocatorSpec locator(Object value) throws tools.jackson.core.JacksonException { LoginLocator locator=json.convertValue(value, LoginLocator.class); return new LocatorSpec(locator.kind(), locator.role(), locator.name()); }
   private static String sha256(String input) { try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); } }
 }

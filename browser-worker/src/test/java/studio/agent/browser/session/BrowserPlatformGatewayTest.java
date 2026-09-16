@@ -25,7 +25,12 @@ class BrowserPlatformGatewayTest {
     server.createContext("/internal/worker-context/browser/" + task, e -> { seen.add("context:" + auth(e)); json(e, "{\"loginProfiles\":[{\"id\":\""+profile+"\",\"reference\":\"admin\"}]}"); });
     server.createContext("/internal/tasks/" + task + "/login-profiles/" + profile + "/credential", e -> { seen.add("credential:" + auth(e)); json(e, "{\"loginPath\":\"/login\",\"username\":\"user@example.test\",\"password\":\"secret\",\"usernameLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Email\"},\"passwordLocator\":{\"kind\":\"label\",\"role\":null,\"name\":\"Password\"},\"submitLocator\":{\"kind\":\"role\",\"role\":\"button\",\"name\":\"Sign in\"}}"); });
     server.createContext("/internal/tasks/" + task + "/artifacts/presign", e -> { String body = new String(e.getRequestBody().readAllBytes(), StandardCharsets.UTF_8); seen.add("presign:"+auth(e)+":"+field(body,"idempotencyKey")); json(e, "{\"artifactId\":\""+artifact+"\",\"reservationId\":\""+reservation+"\",\"idempotencyKey\":\""+field(body,"idempotencyKey")+"\",\"putUrl\":\"http://127.0.0.1:"+server.getAddress().getPort()+"/put\"}"); });
-    server.createContext("/put", e -> { seen.add("put:"+e.getRequestHeaders().getFirst("x-amz-checksum-sha256")); e.getRequestBody().readAllBytes(); e.sendResponseHeaders(200,-1); e.close(); });
+    server.createContext("/put", e -> {
+      seen.add("put:"+e.getRequestHeaders().getFirst("x-amz-checksum-sha256"));
+      assertThat(e.getRequestHeaders().getFirst("Content-Type")).isEqualTo("image/png");
+      assertThat(e.getRequestHeaders().getFirst("Content-Length")).isEqualTo("3");
+      e.getRequestBody().readAllBytes(); e.sendResponseHeaders(200,-1); e.close();
+    });
     server.createContext("/internal/tasks/" + task + "/artifacts/" + artifact + "/complete", e -> { String body = new String(e.getRequestBody().readAllBytes(), StandardCharsets.UTF_8); seen.add("complete:"+auth(e)+":"+field(body,"reservationId")); json(e,"{\"artifactId\":\""+artifact+"\",\"completed\":true}"); });
     server.start();
     var gateway = new BrowserPlatformGateway("http://127.0.0.1:" + server.getAddress().getPort(), "browser-token");

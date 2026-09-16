@@ -88,7 +88,7 @@ class PlaywrightBrowserServiceTest {
       assertThat(service.snapshot(admin, taskId).snapshot()).contains("admin workspace").doesNotContain("admin-secret");
       assertThat(service.snapshot(member, taskId).snapshot()).contains("member workspace").doesNotContain("admin workspace");
 
-      service.click(admin, new ClickCommand(taskId, LocatorSpec.role("button", "Reports"), ExpectedState.none()));
+      service.click(admin, new ClickCommand(taskId, LocatorSpec.role("menuitem", "Reports"), ExpectedState.none()));
       service.click(admin, new ClickCommand(taskId, LocatorSpec.role("link", "Audit"),
           new ExpectedState("/reports/admin", "Audit report")));
       var adminShot = service.screenshot(admin,
@@ -177,8 +177,9 @@ class PlaywrightBrowserServiceTest {
   private static String page(String role, String heading, String state) {
     return """
         <main><h1>%s</h1><p>%s workspace</p><p>%s</p>
-        <button type='button' onclick="document.getElementById('submenu').hidden=false">Reports</button>
-        <nav id='submenu' hidden aria-label='Report submenu'>
+        <button type='button' role='menuitem' onclick="document.getElementById('submenu').hidden=false">Reports</button>
+        <nav id='submenu' aria-label='Report submenu'>
+          <button type='button' role='menuitem'>Reports overview</button>
           <a href='/reports/admin'>Audit</a><a href='/reports/member'>Activity</a>
         </nav><form><label>Display name <input value='%s user'></label></form></main>
         """.formatted(heading, role, state, role);

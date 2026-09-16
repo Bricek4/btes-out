@@ -1,18 +1,20 @@
 package studio.agent.platform.workflow;
 
 import java.time.OffsetDateTime;
+import java.time.Duration;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
 import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.Set;
 import java.nio.charset.StandardCharsets;
-import org.springframework.http.MediaType;
-import org.springframework.http.HttpHeaders;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientResponseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import studio.agent.contracts.TaskType;
@@ -30,18 +32,21 @@ import tools.jackson.databind.ObjectMapper;
 public class TaskWorkflowDispatchService {
   private static final int BATCH_SIZE = 8;
   private static final int MAX_ERROR_LENGTH = 120;
+  private static final int MAX_WORKFLOW_RESPONSE_BYTES = 1_048_576;
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Logger LOG = LoggerFactory.getLogger(TaskWorkflowDispatchService.class);
 
   private final JdbcClient jdbc;
-  private final RestClient workflow;
+  private final HttpClient workflowHttp;
+  private final URI workflowBase;
   private final String token;
 
   public TaskWorkflowDispatchService(JdbcClient jdbc, PlatformProperties properties) {
     this.jdbc = jdbc;
     String baseUrl = RequiredPlatformSettings.require("WORKFLOW_SERVICE_BASE_URL", properties.workflowServiceBaseUrl());
     this.token = RequiredPlatformSettings.require("WORKFLOW_SERVICE_TOKEN", properties.workflowServiceToken());
-    this.workflow = RestClient.builder().baseUrl(baseUrl).build();
+    this.workflowHttp = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    this.workflowBase = URI.create(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
   }
 
   public void enqueue(UUID taskId, UUID projectId, TaskType type, UUID revisionId, UUID templateVersionId,
@@ -117,23 +122,19 @@ public class TaskWorkflowDispatchService {
                 "providerProfileReference", row.providerProfileReference(),
                 "requiresApproval", row.requiresApproval());
         String startBody = json(startPayload);
-        workflow.post()
-            .uri("/internal/workflows/tasks/{taskId}/start", row.taskId())
-            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON)
-            .body(startBody)
-            .retrieve()
-            .toBodilessEntity();
+        byte[] startBytes = startBody.getBytes(StandardCharsets.UTF_8);
+        sendWorkflow("internal/workflows/tasks/" + row.taskId() + "/start", startBytes);
         markDispatched(row.taskId());
-      } catch (RestClientResponseException failure) {
-        if (failure.getStatusCode().value() == 409
-            && failure.getResponseBodyAsString().contains("WORKFLOW_INPUT_CONFLICT")) {
+      } catch (WorkflowHttpException failure) {
+        if (failure.status() == 409 && failure.body().contains("WORKFLOW_INPUT_CONFLICT")) {
           // The workflow id already belongs to a different opaque input. Retrying would loop
           // forever and leave the task looking queued, so surface a terminal dispatch failure.
           markPermanentFailure(row, "WORKFLOW_INPUT_CONFLICT");
         } else {
-          markFailure(row, workflowFailureCode(failure));
+          markFailure(row, workflowFailureCode(failure.status(), failure.body()));
         }
+      } catch (WorkflowTransportException failure) {
+        markFailure(row, "WORKFLOW_UNAVAILABLE");
       } catch (RuntimeException failure) {
         markFailure(row, "WORKFLOW_UNAVAILABLE");
       }
@@ -152,18 +153,17 @@ public class TaskWorkflowDispatchService {
           if (row.approvedReference() != null) body.put("approvedReference", row.approvedReference());
         }
         String commandBody = json(body);
-        workflow.post().uri("/internal/workflows/tasks/{taskId}/{action}", row.taskId(), row.action())
-            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON)
-            .body(commandBody)
-            .retrieve().toBodilessEntity();
+        byte[] commandBytes = commandBody.getBytes(StandardCharsets.UTF_8);
+        sendWorkflow("internal/workflows/tasks/" + row.taskId() + "/" + row.action(), commandBytes);
         markCommandDelivered(row.id());
-      } catch (RestClientResponseException failure) {
-        if (failure.getStatusCode().value() == 404 || failure.getStatusCode().value() == 409) {
+      } catch (WorkflowHttpException failure) {
+        if (failure.status() == 404 || failure.status() == 409) {
           markCommandFailure(row, "WORKFLOW_COMMAND_REJECTED");
         } else {
-          markCommandFailure(row, workflowFailureCode(failure));
+          markCommandFailure(row, workflowFailureCode(failure.status(), failure.body()));
         }
+      } catch (WorkflowTransportException failure) {
+        markCommandFailure(row, "WORKFLOW_UNAVAILABLE");
       } catch (RuntimeException failure) {
         markCommandFailure(row, "WORKFLOW_UNAVAILABLE");
       }
@@ -255,9 +255,31 @@ public class TaskWorkflowDispatchService {
     catch (Exception invalid) { throw new IllegalStateException("workflow request serialization failed"); }
   }
 
-  private static String workflowFailureCode(RestClientResponseException failure) {
-    int status = failure.getStatusCode().value();
-    String body = failure.getResponseBodyAsString();
+  private void sendWorkflow(String path, byte[] body) {
+    try {
+      URI target = workflowBase.resolve(path);
+      HttpRequest request = HttpRequest.newBuilder(target).timeout(Duration.ofSeconds(30))
+          .header("Authorization", "Bearer " + token)
+          .header("Content-Type", "application/json")
+          .header("Accept", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
+      HttpResponse<byte[]> response = workflowHttp.send(request, HttpResponse.BodyHandlers.ofByteArray());
+      if (response.body().length > MAX_WORKFLOW_RESPONSE_BYTES) throw new WorkflowTransportException();
+      if (response.statusCode() / 100 != 2) {
+        throw new WorkflowHttpException(response.statusCode(),
+            new String(response.body(), StandardCharsets.UTF_8));
+      }
+    } catch (WorkflowHttpException | WorkflowTransportException failure) {
+      throw failure;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new WorkflowTransportException();
+    } catch (IOException | RuntimeException failure) {
+      throw new WorkflowTransportException();
+    }
+  }
+
+  private static String workflowFailureCode(int status, String body) {
     String code = body.contains("INVALID_REQUEST") ? "INVALID_REQUEST"
         : body.contains("WORKFLOW_INPUT_CONFLICT") ? "WORKFLOW_INPUT_CONFLICT"
         : body.contains("WORKFLOW_NOT_FOUND") ? "WORKFLOW_NOT_FOUND"
@@ -266,6 +288,19 @@ public class TaskWorkflowDispatchService {
     LOG.warn("workflow request rejected: status={}, code={}", status, safe);
     return safe;
   }
+
+  private static final class WorkflowHttpException extends RuntimeException {
+    private final int status;
+    private final String body;
+    private WorkflowHttpException(int status, String body) {
+      this.status = status;
+      this.body = body == null ? "" : body;
+    }
+    int status() { return status; }
+    String body() { return body; }
+  }
+
+  private static final class WorkflowTransportException extends RuntimeException { }
 
   private record DispatchRow(UUID taskId, UUID projectId, String taskType, String sourceReference,
                              String templateVersionReference, String parametersReference,

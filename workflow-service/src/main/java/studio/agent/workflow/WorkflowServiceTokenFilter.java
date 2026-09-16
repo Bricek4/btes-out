@@ -18,6 +18,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 final class WorkflowServiceTokenFilter extends OncePerRequestFilter {
   private static final int MAX_JSON_BYTES = 16_384;
+  static final String BUFFERED_BODY_BYTES = WorkflowServiceTokenFilter.class.getName() + ".bodyBytes";
+  static final String BUFFERED_BODY_SHA256 = WorkflowServiceTokenFilter.class.getName() + ".bodySha256";
   private final byte[] expected;
 
   WorkflowServiceTokenFilter(String token) {
@@ -48,15 +50,17 @@ final class WorkflowServiceTokenFilter extends OncePerRequestFilter {
       return;
     }
     if (request.getContentType() != null
-        && request.getContentType().startsWith(MediaType.APPLICATION_JSON_VALUE)
-        && length < 0) {
-      // Chunked transfer encoding is valid for internal clients such as RestClient. Buffer the
-      // bounded body so the size guard remains effective without requiring Content-Length.
+        && request.getContentType().startsWith(MediaType.APPLICATION_JSON_VALUE)) {
+      // Buffer every bounded JSON request, whether it arrived with Content-Length or chunked
+      // encoding. This gives Jackson one deterministic body and keeps the size guard effective
+      // when internal clients use streaming request publishers.
       byte[] body = request.getInputStream().readNBytes(MAX_JSON_BYTES + 1);
       if (body.length > MAX_JSON_BYTES) {
         writeError(response, HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE, "REQUEST_TOO_LARGE");
         return;
       }
+      request.setAttribute(BUFFERED_BODY_BYTES, body.length);
+      request.setAttribute(BUFFERED_BODY_SHA256, bodyHash(body));
       chain.doFilter(new CachedBodyRequest(request, body), response);
       return;
     }
@@ -97,5 +101,10 @@ final class WorkflowServiceTokenFilter extends OncePerRequestFilter {
     response.setStatus(status);
     response.setContentType(MediaType.APPLICATION_JSON_VALUE);
     response.getWriter().write("{\"code\":\"" + code + "\"}");
+  }
+
+  private static String bodyHash(byte[] body) {
+    try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)); }
+    catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable", impossible); }
   }
 }

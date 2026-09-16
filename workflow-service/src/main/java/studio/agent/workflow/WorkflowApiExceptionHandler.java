@@ -5,6 +5,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,9 +14,14 @@ final class WorkflowApiExceptionHandler {
   private static final Logger LOG = LoggerFactory.getLogger(WorkflowApiExceptionHandler.class);
 
   @ExceptionHandler({IllegalArgumentException.class, HttpMessageNotReadableException.class})
-  ResponseEntity<ApiError> invalidRequest(Exception failure) {
-    // Keep diagnostics to a type/code pair. Jackson exception messages can contain request data.
-    LOG.warn("workflow request rejected as invalid: type={}", failure.getClass().getSimpleName());
+  ResponseEntity<ApiError> invalidRequest(Exception failure, HttpServletRequest request) {
+    // Keep diagnostics to types, lengths and a body hash. Jackson messages can contain request data.
+    Object bytes = request.getAttribute(WorkflowServiceTokenFilter.BUFFERED_BODY_BYTES);
+    Object hash = request.getAttribute(WorkflowServiceTokenFilter.BUFFERED_BODY_SHA256);
+    String cause = failure.getCause() == null ? "none" : failure.getCause().getClass().getSimpleName();
+    LOG.warn("workflow request rejected as invalid: type={}, cause={}, contentType={}, contentLength={}, bufferedBytes={}, bodyHash={}",
+        failure.getClass().getSimpleName(), cause, request.getContentType(), request.getContentLengthLong(), bytes,
+        hash == null ? "none" : String.valueOf(hash).substring(0, Math.min(12, String.valueOf(hash).length())));
     return ResponseEntity.badRequest().body(new ApiError("INVALID_REQUEST"));
   }
 

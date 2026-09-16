@@ -65,7 +65,9 @@ class WorkerExecutionServiceTest {
 
     assertEquals(TaskStatus.SUCCEEDED, result.completion().status());
     assertEquals("artifact://" + taskId + "/users/users.png", result.artifactReference());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertTrue(new String(platform.uploads.getLast().bytes(), StandardCharsets.UTF_8)
+        .contains("artifact://" + taskId + "/users/users.png"));
     assertNull(result.approvalRequest());
   }
 
@@ -88,7 +90,7 @@ class WorkerExecutionServiceTest {
     var approved = service.execute(request(taskId, TaskType.SCREENSHOT), result.approvalRequest().reference());
     assertEquals(TaskStatus.SUCCEEDED, approved.completion().status());
     assertEquals("artifact://" + taskId + "/users/users.png", approved.artifactReference());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
   }
 
   @Test void neverAppliesAnApprovalToRegeneratedContent() {
@@ -124,7 +126,7 @@ class WorkerExecutionServiceTest {
 
     assertSame(first, repeated);
     assertEquals(1, browser.screenshots);
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
   }
 
   private static WorkerTaskRequest request(UUID taskId, TaskType type) {

@@ -1,6 +1,7 @@
 package studio.agent.platform.task;
 
 import java.time.OffsetDateTime;
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,6 +28,7 @@ public class TaskController {
   @PostMapping @ResponseStatus(HttpStatus.ACCEPTED) @org.springframework.transaction.annotation.Transactional
   View create(CurrentUser user,@RequestHeader("Idempotency-Key") String key,@RequestBody CreateTaskRequest request){
     key = normalizeIdempotencyKey(key);
+    validateTaskParameters(request);
     if(!ownsProject(user,request.projectId()))throw notFound("PROJECT_NOT_FOUND");
     var existing=jdbc.sql("SELECT id,project_id,task_type,status,created_at,updated_at,result_reference,failure_code,template_version_id,parameters::text,provider_profile_id,model_id FROM tasks WHERE project_id=:project AND idempotency_key=:key AND owner_id=:owner AND deleted_at IS NULL").param("project",request.projectId()).param("key",key).param("owner",user.id()).query((rs,n)->new ExistingTask(view(rs),rs.getObject(9,UUID.class),rs.getString(10),rs.getObject(11,UUID.class),rs.getString(12))).optional();if(existing.isPresent()){var prior=existing.get();if(!sameIdempotentRequest(prior,request))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT,"IDEMPOTENCY_KEY_REUSED");return prior.view();}
     var revision=jdbc.sql("SELECT id FROM project_revisions WHERE project_id=:project ORDER BY ordinal DESC LIMIT 1").param("project",request.projectId()).query(UUID.class).optional().orElseThrow(()->new IllegalArgumentException("project requires an imported revision"));
@@ -57,6 +59,23 @@ public class TaskController {
   private long nextSequence(UUID id){return jdbc.sql("SELECT COALESCE(MAX(sequence),0)+1 FROM task_events WHERE task_id=:id").param("id",id).query(Long.class).single();}
   private static View view(java.sql.ResultSet rs)throws java.sql.SQLException{return new View(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getString(3),rs.getString(4),rs.getObject(5,OffsetDateTime.class),rs.getObject(6,OffsetDateTime.class),rs.getString(7),rs.getString(8));}
   private static String normalizeIdempotencyKey(String key){if(key==null||key.isBlank()||key.trim().length()>255)throw new IllegalArgumentException("Idempotency-Key is invalid");return key.trim();}
+  private static void validateTaskParameters(CreateTaskRequest request) {
+    if (request.type() != studio.agent.contracts.TaskType.SCREENSHOT) return;
+    var base = request.parameters().get("baseUrl");
+    if (base == null || !base.isTextual() || base.asString().isBlank()) {
+      throw new IllegalArgumentException("baseUrl is required for screenshot tasks");
+    }
+    try {
+      URI uri = URI.create(base.asString().trim());
+      if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
+          || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null) {
+        throw new IllegalArgumentException("baseUrl is invalid");
+      }
+    } catch (IllegalArgumentException invalid) {
+      if ("baseUrl is invalid".equals(invalid.getMessage())) throw invalid;
+      throw new IllegalArgumentException("baseUrl is invalid");
+    }
+  }
   private static boolean sameIdempotentRequest(ExistingTask prior,CreateTaskRequest request){if(!prior.view().type().equals(request.type().name())||!prior.templateVersionId().equals(request.templateVersionId())||!sameJson(prior.parameters(),request.parameters()))return false;if(request.providerProfileId()!=null)return request.providerProfileId().equals(prior.providerProfileId())&&request.modelId().equals(prior.modelId());return true;}
   private static boolean sameJson(String stored,Object requested){try{var mapper=new tools.jackson.databind.ObjectMapper();return mapper.readTree(stored).equals(mapper.readTree(mapper.writeValueAsString(requested)));}catch(Exception e){return false;}}
   private static String json(Object v){try{return new tools.jackson.databind.ObjectMapper().writeValueAsString(v==null?Map.of():v);}catch(tools.jackson.core.JacksonException e){throw new IllegalArgumentException("invalid JSON",e);}}

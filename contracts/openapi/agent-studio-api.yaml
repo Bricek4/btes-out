@@ -2,7 +2,10 @@ openapi: 3.1.0
 info:
   title: Agent Studio API
   version: 0.1.0
-  description: Task API contract. Authentication and authorization are implemented by platform-api.
+  description: >-
+    Task API contract. Authentication and authorization are implemented by platform-api.
+    Screenshot tasks require an explicit application baseUrl in parameters; login profile URLs
+    are used only for authentication and are never treated as the application entry point.
 paths:
   /v1/tasks:
     post:
@@ -71,8 +74,14 @@ components:
         parameters:
           type: object
           maxProperties: 100
-          description: Parameter values validated against the selected template-version schema; serialized parameters must not exceed 65536 bytes.
+          description: Parameter values validated against the selected template-version schema; serialized parameters must not exceed 65536 bytes. SCREENSHOT tasks must include an HTTP(S) baseUrl for the application under test.
           additionalProperties: true
+          properties:
+            baseUrl:
+              type: string
+              format: uri
+              pattern: '^https?://[^#]+$'
+              description: Application entry URL used after login; keep login page configuration in the selected login profile.
         providerProfileId:
           type: string
           format: uuid

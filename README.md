@@ -23,12 +23,24 @@ Build the backend reactor:
 Build the frontend:
 
 ```sh
-cd frontend
 npm ci --no-audit --no-fund
 npm run build
 ```
 
-The frontend development server proxies `/api` to `http://localhost:8080`. Platform API requires all security-sensitive values from the environment; do not put real credentials in a committed file. Remote Git imports accept HTTPS repositories on the configured `GIT_ALLOWED_HOSTS` list (GitHub, GitLab and Bitbucket by default), use a shallow clone, and enforce connection, file-count and archive-size limits. Add the host/container egress firewall required by your deployment before allowing additional hosts.
+The frontend development server proxies `/api` to `http://localhost:8080` (use `npm run dev -- --host 127.0.0.1 --port 4177` for the local preview used in the runbook). Platform API requires all security-sensitive values from the environment; do not put real credentials in a committed file. Remote Git imports accept HTTPS repositories on the configured `GIT_ALLOWED_HOSTS` list (GitHub, GitLab and Bitbucket by default), use a shallow clone, and enforce connection, file-count and archive-size limits. Add the host/container egress firewall required by your deployment before allowing additional hosts.
+
+### Fast local JVM loop
+
+When iterating on Java code, keep PostgreSQL, MinIO, Mailpit and Temporal in containers and run the four application jars on the host. The helper publishes only the infrastructure ports needed by those jars, builds the reactor, waits for Platform health and records logs/PIDs under `.local-runtime/`:
+
+```sh
+cp deploy/.env.example .env
+./deploy/generate-local-env.sh .env
+./deploy/run-local.sh .env start
+npm run dev -- --host 127.0.0.1 --port 4177
+```
+
+Use `./deploy/run-local.sh .env status` to inspect the processes and `./deploy/run-local.sh .env stop` to stop only the host JVMs. This avoids rebuilding application images for each change; the production Compose file remains unchanged.
 
 ## Compose deployment
 
