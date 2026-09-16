@@ -117,12 +117,11 @@ public class TaskWorkflowDispatchService {
                 "providerProfileReference", row.providerProfileReference(),
                 "requiresApproval", row.requiresApproval());
         String startBody = json(startPayload);
-        byte[] startBytes = startBody.getBytes(StandardCharsets.UTF_8);
         workflow.post()
             .uri("/internal/workflows/tasks/{taskId}/start", row.taskId())
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON).contentLength(startBytes.length)
-            .body(startBytes)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body(startBody)
             .retrieve()
             .toBodilessEntity();
         markDispatched(row.taskId());
@@ -153,11 +152,10 @@ public class TaskWorkflowDispatchService {
           if (row.approvedReference() != null) body.put("approvedReference", row.approvedReference());
         }
         String commandBody = json(body);
-        byte[] commandBytes = commandBody.getBytes(StandardCharsets.UTF_8);
         workflow.post().uri("/internal/workflows/tasks/{taskId}/{action}", row.taskId(), row.action())
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .contentType(MediaType.APPLICATION_JSON).contentLength(commandBytes.length)
-            .body(commandBytes)
+            .contentType(MediaType.APPLICATION_JSON)
+            .body(commandBody)
             .retrieve().toBodilessEntity();
         markCommandDelivered(row.id());
       } catch (RestClientResponseException failure) {
