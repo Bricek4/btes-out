@@ -1,50 +1,62 @@
 package studio.agent.platform.product;
 
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.util.Timeout;
 import org.springframework.stereotype.Service;
 
 @Service
-final class ProviderProbeClient {
+final class ProviderProbeClient implements AutoCloseable {
   private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
   private final ProviderEndpointPolicy policy;
-  private final HttpClient client;
+  private final CloseableHttpClient client;
 
-  ProviderProbeClient() {
-    this(new ProviderEndpointPolicy(), HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
-        .followRedirects(HttpClient.Redirect.NEVER).build());
-  }
-
-  ProviderProbeClient(ProviderEndpointPolicy policy, HttpClient client) {
+  ProviderProbeClient(ProviderEndpointPolicy policy) {
     this.policy = policy;
-    this.client = client;
+    var connectionConfig = ConnectionConfig.custom().setConnectTimeout(Timeout.ofSeconds(5))
+        .setSocketTimeout(Timeout.ofSeconds(10)).build();
+    var connections = PoolingHttpClientConnectionManagerBuilder.create().setDnsResolver(policy.connectionResolver())
+        .setDefaultConnectionConfig(connectionConfig).setMaxConnTotal(20).setMaxConnPerRoute(10).build();
+    var requestConfig = RequestConfig.custom().setConnectionRequestTimeout(Timeout.ofSeconds(2))
+        .setResponseTimeout(Timeout.ofSeconds(10)).setRedirectsEnabled(false).build();
+    this.client = HttpClients.custom().setConnectionManager(connections).setDefaultRequestConfig(requestConfig)
+        .disableRedirectHandling().disableAutomaticRetries().build();
   }
 
   ProbeResult probe(String baseUrl, String apiKey) {
-    var request = HttpRequest.newBuilder(policy.modelsEndpoint(baseUrl)).timeout(Duration.ofSeconds(10))
-        .header("Accept", "application/json").header("Authorization", "Bearer " + apiKey).GET().build();
+    var request = new HttpGet(policy.modelsEndpointForConnection(baseUrl));
+    request.setHeader("Accept", "application/json");
+    request.setHeader("Authorization", "Bearer " + apiKey);
     long started = System.nanoTime();
     try {
-      var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-      long elapsedMillis = Duration.ofNanos(System.nanoTime() - started).toMillis();
-      try (var input = response.body()) {
-        byte[] body = input.readNBytes(MAX_RESPONSE_BYTES + 1);
-        if (body.length > MAX_RESPONSE_BYTES) return new ProbeResult(false, response.statusCode(), elapsedMillis, List.of(), "RESPONSE_TOO_LARGE");
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-          return new ProbeResult(false, response.statusCode(), elapsedMillis, List.of(), "HTTP_" + response.statusCode());
+      return client.execute(request, response -> {
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - started).toMillis();
+        int status = response.getCode();
+        if (response.getEntity() == null) return new ProbeResult(false, status, elapsedMillis, List.of(), "EMPTY_RESPONSE");
+        try (var input = response.getEntity().getContent()) {
+          byte[] body = input.readNBytes(MAX_RESPONSE_BYTES + 1);
+          if (body.length > MAX_RESPONSE_BYTES) return new ProbeResult(false, status, elapsedMillis, List.of(), "RESPONSE_TOO_LARGE");
+          if (status < 200 || status >= 300) return new ProbeResult(false, status, elapsedMillis, List.of(), "HTTP_" + status);
+          return new ProbeResult(true, status, elapsedMillis, ProviderResponseParser.parseModels(body), "OK");
         }
-        return new ProbeResult(true, response.statusCode(), elapsedMillis, ProviderResponseParser.parseModels(body), "OK");
-      }
-    } catch (InterruptedException exception) {
-      Thread.currentThread().interrupt();
-      throw new ProviderProbeException("provider request interrupted", exception);
+      });
     } catch (IOException | IllegalArgumentException exception) {
       throw new ProviderProbeException("provider connection failed", exception);
     }
+  }
+
+  @Override
+  @PreDestroy
+  public void close() throws IOException {
+    client.close();
   }
 
   record ProbeResult(boolean ok, int statusCode, long latencyMillis, List<String> models, String code) { }

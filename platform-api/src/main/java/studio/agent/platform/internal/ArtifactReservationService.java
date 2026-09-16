@@ -9,6 +9,7 @@ import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import studio.agent.platform.artifact.ArtifactZip;
 import studio.agent.platform.security.WorkerTokenGuard;
 import studio.agent.platform.storage.ObjectStoreService;
 import tools.jackson.core.JacksonException;
@@ -17,7 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /** Transactional reservation and publication boundary shared by Agent and Browser workers. */
 @Service
-public final class ArtifactReservationService {
+public class ArtifactReservationService {
   static final long MAX_ARTIFACT_BYTES = 20_000_000L;
   static final long MAX_MANIFEST_BYTES = 1_000_000L;
   private static final Set<String> AGENT_KINDS = Set.of("DOC", "HTML", "MANIFEST");
@@ -149,6 +150,7 @@ public final class ArtifactReservationService {
     if (request == null || request.name() == null || request.name().isBlank() || request.name().length() > 255
         || request.name().startsWith("/") || request.name().contains("\\") || request.name().contains("\0")
         || Arrays.asList(request.name().split("/")).contains("..")) throw new IllegalArgumentException("invalid artifact name");
+    if (!ArtifactZip.safeName(request.name()).equals(request.name())) throw new IllegalArgumentException("artifact name must be canonical");
     if (request.kind() == null || !(AGENT_KINDS.contains(request.kind()) || "SCREENSHOT".equals(request.kind()))) {
       throw new IllegalArgumentException("invalid artifact kind");
     }

@@ -27,8 +27,8 @@ class ArtifactZipTest {
   void rejectsTraversalAndTotalLimit() {
     assertThrows(IllegalArgumentException.class,
         () -> ArtifactZip.create(java.util.Map.of("../secret", new byte[] {1}), 100));
-    assertThrows(IllegalArgumentException.class,
-        () -> ArtifactZip.create(java.util.Map.of("bad\rname", new byte[] {1}), 100));
+    assertEquals("bad_name", ArtifactZip.safeName("bad\rname"));
+    assertEquals("docs/guide.md", ArtifactZip.safeName("./docs//guide.md"));
     assertThrows(IllegalArgumentException.class,
         () -> ArtifactZip.create(java.util.Map.of("large.bin", new byte[101]), 100));
   }

@@ -27,7 +27,7 @@ class ProviderEndpointPolicyTest {
 
   @Test
   void rejectsCarrierGradeNatDocumentationAndUniqueLocalRanges() throws Exception {
-    for (String address : List.of("100.64.0.1", "203.0.113.10", "fc00::1", "2001:db8::1")) {
+    for (String address : List.of("100.64.0.1", "203.0.113.10", "fc00::1", "2001:db8::1", "64:ff9b::7f00:1")) {
       var policy = new ProviderEndpointPolicy(host -> new InetAddress[] {InetAddress.getByName(address)});
       assertThrows(IllegalArgumentException.class, () -> policy.modelsEndpoint("https://api.example.com/v1"));
     }

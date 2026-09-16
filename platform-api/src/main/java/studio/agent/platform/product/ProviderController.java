@@ -19,12 +19,13 @@ public class ProviderController {
   private final JdbcClient jdbc;
   private final SecretBox secrets;
   private final ProviderProbeClient probes;
-  private final ProviderEndpointPolicy endpoints = new ProviderEndpointPolicy();
+  private final ProviderEndpointPolicy endpoints;
 
-  public ProviderController(JdbcClient jdbc, SecretBox secrets, ProviderProbeClient probes) {
+  public ProviderController(JdbcClient jdbc, SecretBox secrets, ProviderProbeClient probes, ProviderEndpointPolicy endpoints) {
     this.jdbc = jdbc;
     this.secrets = secrets;
     this.probes = probes;
+    this.endpoints = endpoints;
   }
 
   record ProviderInput(String name, String providerType, String baseUrl, String apiKey,
@@ -158,10 +159,11 @@ public class ProviderController {
         .param("id", providerId).query((rs, row) -> new ModelView(rs.getString(1), rs.getString(2), rs.getString(3), rs.getBoolean(4))).list();
   }
 
-  @DeleteMapping("/{providerId}/models/{modelId}")
+  @DeleteMapping("/{providerId}/models")
   @ResponseStatus(HttpStatus.NO_CONTENT)
   @Transactional
-  void deleteModel(CurrentUser user, @PathVariable UUID providerId, @PathVariable String modelId) {
+  void deleteModel(CurrentUser user, @PathVariable UUID providerId, @RequestParam String modelId) {
+    modelId = required(modelId, "modelId", 255);
     owned(user, providerId);
     boolean inUse = jdbc.sql("SELECT EXISTS(SELECT 1 FROM tasks WHERE provider_profile_id=:id AND model_id=:model)")
         .param("id", providerId).param("model", modelId).query(Boolean.class).single();

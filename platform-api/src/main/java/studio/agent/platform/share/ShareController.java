@@ -44,8 +44,9 @@ public class ShareController {
         SELECT s.id,s.resource_type,s.resource_id,u.id,u.email,s.created_at
           FROM shares s JOIN users u ON u.id=s.member_id
          WHERE s.owner_id=:owner AND s.resource_type=:type AND s.resource_id=:resource
+           AND u.organization_id=:org AND u.disabled_at IS NULL
          ORDER BY lower(u.email)
-        """).param("owner", user.id()).param("type", resource.type()).param("resource", resourceId)
+        """).param("owner", user.id()).param("type", resource.type()).param("resource", resourceId).param("org", user.organizationId())
         .query((rs, row) -> new ShareView(rs.getObject(1, UUID.class), rs.getString(2), rs.getObject(3, UUID.class),
             new MemberView(rs.getObject(4, UUID.class), rs.getString(5)), "READ", rs.getObject(6, OffsetDateTime.class))).list();
   }
@@ -55,8 +56,13 @@ public class ShareController {
     return jdbc.sql("""
         SELECT s.id,s.resource_type,s.resource_id,u.id,u.email,s.created_at
           FROM shares s JOIN users u ON u.id=s.owner_id
-         WHERE s.member_id=:member ORDER BY s.created_at DESC
-        """).param("member", user.id()).query((rs, row) -> new ReceivedShareView(
+         WHERE s.member_id=:member AND u.organization_id=:org AND u.disabled_at IS NULL AND (
+           (s.resource_type='PROJECT' AND EXISTS(SELECT 1 FROM projects p WHERE p.id=s.resource_id AND p.owner_id=s.owner_id AND p.organization_id=:org))
+           OR (s.resource_type='ARTIFACT' AND EXISTS(SELECT 1 FROM artifacts a JOIN tasks t ON t.id=a.task_id
+               JOIN projects p ON p.id=t.project_id WHERE a.id=s.resource_id AND t.owner_id=s.owner_id
+               AND p.owner_id=s.owner_id AND p.organization_id=:org AND t.deleted_at IS NULL)))
+         ORDER BY s.created_at DESC
+        """).param("member", user.id()).param("org", user.organizationId()).query((rs, row) -> new ReceivedShareView(
         rs.getObject(1, UUID.class), rs.getString(2), rs.getObject(3, UUID.class),
         new MemberView(rs.getObject(4, UUID.class), rs.getString(5)), "READ", rs.getObject(6, OffsetDateTime.class))).list();
   }
