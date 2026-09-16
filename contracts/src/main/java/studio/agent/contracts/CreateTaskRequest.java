@@ -3,6 +3,7 @@ package studio.agent.contracts;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -26,13 +27,22 @@ public record CreateTaskRequest(UUID projectId, TaskType type, UUID templateVers
       requireText(name, "parameter name");
       Objects.requireNonNull(value, "parameter value is required");
     });
-    parameters = Map.copyOf(parameters);
+    parameters = copyParameters(parameters);
     if (serializedSize(parameters) > MAX_PARAMETERS_SERIALIZED_BYTES) {
       throw new IllegalArgumentException("parameters must not exceed " + MAX_PARAMETERS_SERIALIZED_BYTES + " serialized bytes");
     }
   }
 
   public TaskStatus initialStatus() { return TaskStatus.QUEUED; }
+
+  @Override
+  public Map<String, JsonNode> parameters() {
+    return copyParameters(parameters);
+  }
+
+  public int parametersSerializedSize() {
+    return serializedSize(parameters);
+  }
 
   static void requireText(String value, String name) {
     if (value == null || value.isBlank()) throw new IllegalArgumentException(name + " is required");
@@ -44,5 +54,11 @@ public record CreateTaskRequest(UUID projectId, TaskType type, UUID templateVers
     } catch (JsonProcessingException exception) {
       throw new IllegalArgumentException("parameters must be JSON-serializable", exception);
     }
+  }
+
+  private static Map<String, JsonNode> copyParameters(Map<String, JsonNode> parameters) {
+    var copy = new LinkedHashMap<String, JsonNode>();
+    parameters.forEach((name, value) -> copy.put(name, value.deepCopy()));
+    return Map.copyOf(copy);
   }
 }

@@ -7,8 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +25,27 @@ class TaskContractTest {
     assertEquals(TaskStatus.QUEUED, request.initialStatus());
     assertEquals(templateVersionId, request.templateVersionId());
     assertEquals("maintainers", request.parameters().get("audience").asText());
+  }
+
+  @Test
+  void task_request_deep_copies_parameters_on_input_and_access() {
+    var original = JsonNodeFactory.instance.objectNode().put("title", "before");
+    var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
+        Map.of("context", original));
+    original.put("title", "caller changed it");
+
+    assertEquals("before", request.parameters().get("context").get("title").asText());
+    ((ObjectNode) request.parameters().get("context")).put("title", "accessor changed it");
+    assertEquals("before", request.parameters().get("context").get("title").asText());
+  }
+
+  @Test
+  void exposes_only_the_allowed_public_and_worker_record_components() {
+    assertEquals(List.of("projectId", "type", "templateVersionId", "parameters"),
+        java.util.Arrays.stream(CreateTaskRequest.class.getRecordComponents()).map(component -> component.getName()).toList());
+    assertEquals(List.of("taskId", "projectId", "type", "sourceReference", "templateVersionReference",
+            "parametersReference", "providerProfileReference"),
+        java.util.Arrays.stream(WorkerTaskRequest.class.getRecordComponents()).map(component -> component.getName()).toList());
   }
 
   @Test
@@ -51,6 +75,8 @@ class TaskContractTest {
         () -> new CreateTaskRequest(null, TaskType.PROJECT_DOCS, UUID.randomUUID(), Map.of()));
     assertThrows(NullPointerException.class,
         () -> new CreateTaskRequest(projectId, null, UUID.randomUUID(), Map.of()));
+    assertThrows(NullPointerException.class,
+        () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, null, Map.of()));
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(projectId, TaskType.PROJECT_DOCS, UUID.randomUUID(), null));
   }
@@ -58,12 +84,16 @@ class TaskContractTest {
   @Test
   void rejects_parameters_above_the_property_or_serialized_size_limit() {
     var parameters = new LinkedHashMap<String, com.fasterxml.jackson.databind.JsonNode>();
-    for (int index = 0; index < 101; index++) parameters.put("field" + index, TextNode.valueOf("value"));
+    for (int index = 0; index < 100; index++) parameters.put("field" + index, TextNode.valueOf("value"));
+    assertEquals(100, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters).parameters().size());
+    parameters.put("field100", TextNode.valueOf("value"));
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters));
+    assertEquals(65_536, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
+        Map.of("body", TextNode.valueOf("x".repeat(65_525)))).parametersSerializedSize());
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-            Map.of("body", TextNode.valueOf("x".repeat(65_536)))));
+            Map.of("body", TextNode.valueOf("x".repeat(65_526)))));
   }
 
   @Test
