@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import studio.agent.contracts.LoginLocator;
 import tools.jackson.databind.ObjectMapper;
 
 /** Browser-token-only adapter: credentials remain here and are not returned by session APIs. */
@@ -28,7 +29,7 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
       if (profileId == null) throw new IllegalArgumentException("login profile is not present in task browser context");
       Map<?,?> credential = post("/internal/tasks/" + taskId + "/login-profiles/" + profileId + "/credential", Map.of());
       return new LoginCredential(String.valueOf(credential.get("loginPath")), String.valueOf(credential.get("username")), String.valueOf(credential.get("password")),
-          parseLocator(String.valueOf(credential.get("usernameLocator"))), parseLocator(String.valueOf(credential.get("passwordLocator"))), parseLocator(String.valueOf(credential.get("submitLocator"))), ExpectedState.none());
+          locator(credential.get("usernameLocator")), locator(credential.get("passwordLocator")), locator(credential.get("submitLocator")), ExpectedState.none());
     } catch (Exception e) { throw new IllegalStateException("login credential resolution failed"); }
   }
   @Override public void publish(PublishedArtifact artifact) {
@@ -45,6 +46,6 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
   private Map<?,?> post(String path,Object body) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).timeout(REQUEST_TIMEOUT).header("Authorization","Bearer "+token).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body))).build()); }
   private Map<?,?> send(HttpRequest request) throws Exception { var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray()); if(response.body().length>MAX_RESPONSE_BYTES) throw new IllegalStateException("PLATFORM_RESPONSE_TOO_LARGE"); if(response.statusCode()/100!=2) throw new IllegalStateException("PLATFORM_REQUEST_REJECTED"); return json.readValue(response.body(),Map.class); }
   private void put(URI url,byte[] bytes,String sha256) throws Exception { String checksum=java.util.Base64.getEncoder().encodeToString(java.util.HexFormat.of().parseHex(sha256)); var response=http.send(HttpRequest.newBuilder(url).timeout(REQUEST_TIMEOUT).header("x-amz-checksum-sha256",checksum).PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),HttpResponse.BodyHandlers.discarding()); if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED"); }
-  private static LocatorSpec parseLocator(String value) { String[] p=value.split(":",3); if(p.length==3&&"role".equals(p[0]))return LocatorSpec.role(p[1],p[2]); if(p.length==2&&"label".equals(p[0]))return LocatorSpec.label(p[1]); if(p.length==2&&"test-id".equals(p[0]))return LocatorSpec.testId(p[1]); return LocatorSpec.label(value); }
+  private LocatorSpec locator(Object value) throws tools.jackson.core.JacksonException { LoginLocator locator=json.convertValue(value, LoginLocator.class); return new LocatorSpec(locator.kind(), locator.role(), locator.name()); }
   private static String sha256(String input) { try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); } }
 }
