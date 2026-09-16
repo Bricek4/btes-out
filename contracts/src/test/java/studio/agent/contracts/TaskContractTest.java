@@ -10,9 +10,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.TextNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
 class TaskContractTest {
@@ -20,7 +20,7 @@ class TaskContractTest {
   void accepts_a_public_task_request_with_immutable_template_version_and_bounded_parameters() {
     var templateVersionId = UUID.randomUUID();
     var request = new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, templateVersionId,
-        Map.of("audience", TextNode.valueOf("maintainers")));
+        Map.of("audience", JsonNodeFactory.instance.stringNode("maintainers")));
 
     assertEquals(TaskStatus.QUEUED, request.initialStatus());
     assertEquals(templateVersionId, request.templateVersionId());
@@ -83,17 +83,17 @@ class TaskContractTest {
 
   @Test
   void rejects_parameters_above_the_property_or_serialized_size_limit() {
-    var parameters = new LinkedHashMap<String, com.fasterxml.jackson.databind.JsonNode>();
-    for (int index = 0; index < 100; index++) parameters.put("field" + index, TextNode.valueOf("value"));
+    var parameters = new LinkedHashMap<String, JsonNode>();
+    for (int index = 0; index < 100; index++) parameters.put("field" + index, JsonNodeFactory.instance.stringNode("value"));
     assertEquals(100, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters).parameters().size());
-    parameters.put("field100", TextNode.valueOf("value"));
+    parameters.put("field100", JsonNodeFactory.instance.stringNode("value"));
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(), parameters));
     assertEquals(65_536, new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-        Map.of("body", TextNode.valueOf("x".repeat(65_525)))).parametersSerializedSize());
+        Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_525)))).parametersSerializedSize());
     assertThrows(IllegalArgumentException.class,
         () -> new CreateTaskRequest(UUID.randomUUID(), TaskType.PROJECT_DOCS, UUID.randomUUID(),
-            Map.of("body", TextNode.valueOf("x".repeat(65_526)))));
+            Map.of("body", JsonNodeFactory.instance.stringNode("x".repeat(65_526)))));
   }
 
   @Test

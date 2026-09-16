@@ -1,6 +1,7 @@
 # Contributing
 
-Use JDK 21 and the checked-in Maven Wrapper. Run `./mvnw test` before opening a change.
+Use JDK 21, Spring Boot 4.1.1, Jackson 3 (`tools.jackson.*`), and the checked-in Maven Wrapper.
+Run `./mvnw test` before opening a change.
 
 `contracts` contains stable DTOs, task states, and the OpenAPI document. Services may depend on
 `contracts`; contracts must not depend on a service. Keep provider secrets, raw prompts, and raw

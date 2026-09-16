@@ -28,8 +28,8 @@ Services depend only on `contracts`; workers and workflow orchestration do not d
 
 ## Build
 
-JDK 21 is required. A Maven Wrapper is checked in because a system Maven installation is not
-required:
+JDK 21, Spring Boot 4.1.1, and Jackson 3 are used throughout. A Maven Wrapper is checked in
+because a system Maven installation is not required:
 
 ```sh
 ./mvnw test

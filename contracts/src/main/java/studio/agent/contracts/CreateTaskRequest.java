@@ -1,8 +1,8 @@
 package studio.agent.contracts;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -51,7 +51,7 @@ public record CreateTaskRequest(UUID projectId, TaskType type, UUID templateVers
   private static int serializedSize(Map<String, JsonNode> parameters) {
     try {
       return JSON.writeValueAsBytes(parameters).length;
-    } catch (JsonProcessingException exception) {
+    } catch (JacksonException exception) {
       throw new IllegalArgumentException("parameters must be JSON-serializable", exception);
     }
   }

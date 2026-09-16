@@ -6,7 +6,7 @@
   <artifactId>platform-api</artifactId>
   <dependencies>
     <dependency><groupId>studio.agent</groupId><artifactId>contracts</artifactId><version>${project.version}</version></dependency>
-    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>
     <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
   </dependencies>
 </project>
