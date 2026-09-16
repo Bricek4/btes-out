@@ -31,6 +31,16 @@ class PlaywrightBrowserServiceTest {
     fixture = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
     fixture.createContext("/login", PlaywrightBrowserServiceTest::handleLogin);
     fixture.createContext("/auth/login", PlaywrightBrowserServiceTest::handleLogin);
+    fixture.createContext("/async-login", exchange -> respond(exchange, 200, """
+        <main><h1>Sign in</h1><form>
+        <label>Email <input name='email' type='email'></label>
+        <label>Password <input name='password' type='password'></label>
+        <button type='submit'>Sign in</button></form>
+        <script>document.querySelector('form').addEventListener('submit', event => {
+          event.preventDefault();
+          setTimeout(() => { document.cookie = 'fixture-role=admin; Path=/'; window.location = '/app'; }, 800);
+        });</script></main>
+        """));
     fixture.createContext("/app", exchange -> {
       String role = cookie(exchange, "fixture-role");
       if (role == null) { respond(exchange, 401, "<h1>Unauthorized</h1>"); return; }
@@ -152,6 +162,21 @@ class PlaywrightBrowserServiceTest {
     }
   }
 
+  @Test
+  void waitsForAsyncLoginRedirectBeforeValidatingThePostLoginState() {
+    try (Playwright playwright = Playwright.create()) {
+      var service = service(playwright, profileCredentials(), artifact -> {});
+      UUID taskId = UUID.randomUUID();
+      UUID session = service.open(new OpenSessionCommand(taskId, baseUrl, "async")).sessionId();
+
+      var login = service.login(session, taskId);
+
+      assertThat(login.status()).isEqualTo(OperationStatus.SUCCEEDED);
+      assertThat(login.reachedUrl()).endsWith("/app");
+      service.closeAll();
+    }
+  }
+
   private static PlaywrightBrowserService service(Playwright playwright,
       Map<String, LoginCredential> credentials, ArtifactPublisher publisher) {
     var policy = new NavigationPolicy(true, List.of("localhost"), List.of(),
@@ -171,6 +196,9 @@ class PlaywrightBrowserServiceTest {
         "member", new LoginCredential("/login", "/app", "member@example.test", "member-secret",
             LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
             new ExpectedState("/app", "member workspace")),
+        "async", new LoginCredential("/async-login", "/app", "admin@example.test", "admin-secret",
+            LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
+            new ExpectedState("/app", "admin workspace")),
         "bad-profile", new LoginCredential("/auth/login", "/app", "admin@example.test", "wrong-secret",
             LocatorSpec.label("Email"), LocatorSpec.label("Password"), LocatorSpec.role("button", "Sign in"),
             new ExpectedState("/app", "admin workspace")));

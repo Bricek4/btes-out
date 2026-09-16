@@ -88,7 +88,9 @@ public final class PlaywrightBrowserService implements AutoCloseable {
       locator(runtime.page(), credential.usernameLocator()).fill(credential.username());
       locator(runtime.page(), credential.passwordLocator()).fill(credential.password());
       locator(runtime.page(), credential.submitLocator()).click();
-      verify(runtime.page(), loginExpected(credential, session.baseUrl()), session.baseUrl());
+      ExpectedState expected = loginExpected(credential, session.baseUrl());
+      waitForExpectedPath(runtime.page(), expected);
+      verify(runtime.page(), expected, session.baseUrl());
     });
     if (result.status() == OperationStatus.FAILED && ("EXPECTED_URL_NOT_REACHED".equals(result.error().code()) || "EXPECTED_STATE_NOT_REACHED".equals(result.error().code()))) {
       return new OperationResult(OperationStatus.FAILED, result.reachedUrl(), result.snapshot(), result.trace(), new BrowserError("LOGIN_REJECTED", "login credentials were rejected or did not reach the expected state"));
@@ -189,6 +191,20 @@ public final class PlaywrightBrowserService implements AutoCloseable {
     URI postLogin = resolve(base, credential.loginPath());
     policy.validate(postLogin, base);
     return new ExpectedState(postLogin.getPath(), expected == null ? null : expected.requiredText());
+  }
+  private void waitForExpectedPath(Page page, ExpectedState expected) {
+    if (expected == null || expected.path() == null || expected.path().isBlank()) return;
+    try {
+      page.waitForURL(url -> {
+        try { return expected.path().equals(URI.create(url).getPath()); }
+        catch (RuntimeException invalid) { return false; }
+      }, new Page.WaitForURLOptions().setTimeout(limits.navigationTimeout().toMillis()));
+    } catch (RuntimeException waitFailure) {
+      if ("TimeoutError".equals(waitFailure.getClass().getSimpleName())) {
+        throw new BrowserActionException("EXPECTED_URL_NOT_REACHED", "expected route was not reached");
+      }
+      throw waitFailure;
+    }
   }
   private Locator locator(Page page, LocatorSpec spec) {
     if (spec == null || spec.name() == null || spec.name().isBlank()) throw new BrowserActionException("LOCATOR_INVALID", "a semantic locator is required");
