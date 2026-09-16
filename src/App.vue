@@ -80,7 +80,7 @@ const newProjectName = ref('')
 const newProjectBusy = ref(false)
 const email = ref('')
 const password = ref('')
-const authMode = ref<'login' | 'setup'>('login')
+const authMode = ref<'login' | 'setup' | 'register'>('login')
 const organizationName = ref('')
 const setupToken = ref('')
 const loginBusy = ref(false)
@@ -208,6 +208,22 @@ async function setupFirstAdmin() {
     notify('管理员与工作区已初始化')
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '初始化失败，请检查启动令牌与输入'
+  } finally {
+    loginBusy.value = false
+  }
+}
+
+async function registerAccount() {
+  if (!email.value.trim() || password.value.length < 12) return
+  loginBusy.value = true
+  errorMessage.value = ''
+  try {
+    await api.register(email.value.trim(), password.value)
+    password.value = ''
+    authMode.value = 'login'
+    notify('验证邮件已发送，请完成邮箱验证后登录')
+  } catch (error) {
+    errorMessage.value = error instanceof ApiError ? error.message : '注册失败，请稍后重试'
   } finally {
     loginBusy.value = false
   }
@@ -612,7 +628,26 @@ function openLaunch(type?: TaskDraft['workflowType']) {
   showLaunch.value = true
 }
 
-onMounted(() => loadData())
+async function verifyEmailLink() {
+  if (window.location.pathname !== '/verify-email') return
+  const value = new URLSearchParams(window.location.search).get('token')
+  if (!value) {
+    errorMessage.value = '验证链接缺少 Token'
+    return
+  }
+  try {
+    await api.verifyEmail(value)
+    history.replaceState({}, '', '/')
+    authMode.value = 'login'
+    notify('邮箱已验证，现在可以登录')
+  } catch (error) {
+    errorMessage.value = error instanceof ApiError ? error.message : '验证链接无效或已过期'
+  }
+}
+
+onMounted(() => {
+  verifyEmailLink().finally(() => loadData())
+})
 </script>
 
 <template>
@@ -701,7 +736,7 @@ onMounted(() => loadData())
 
     <div v-if="showShare && shareArtifact" class="modal-layer" @click.self="showShare = false"><section class="modal-card config-modal share-modal"><div class="modal-card__head"><div><span class="section-head__eyebrow">ARTIFACT ACCESS</span><h2>分享 {{ shareArtifact.name }}</h2><p>只有明确加入的组织成员可以读取该产物，权限固定为只读。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="showShare = false"><X :size="18" /></button></div><div v-if="errorMessage" class="config-error">{{ errorMessage }}</div><form class="share-search" @submit.prevent="searchMembers"><div class="search-box"><Search :size="15" /><input v-model="memberQuery" placeholder="按邮箱搜索组织成员" /></div><button class="button button--quiet" type="submit" :disabled="shareBusy || !memberQuery.trim()">搜索</button></form><div v-if="memberResults.length" class="share-list"><span class="section-head__eyebrow">SEARCH RESULTS</span><div v-for="member in memberResults" :key="member.id" class="share-row"><span>{{ member.email }}</span><button class="text-button" type="button" :disabled="shareBusy" @click="grantArtifact(member)">添加只读权限</button></div></div><div class="share-list"><span class="section-head__eyebrow">CURRENT ACCESS</span><div v-for="grant in shareGrants" :key="grant.id" class="share-row"><span>{{ grant.member.email }}<small>只读</small></span><button class="text-button text-button--danger" type="button" :disabled="shareBusy" @click="revokeShare(grant)">撤销</button></div><div v-if="shareGrants.length === 0" class="event-empty">尚未分享给其他成员</div></div></section></div>
 
-    <div v-if="showLogin" class="auth-layer"><section class="auth-card"><div class="auth-card__brand"><div class="brand-mark"><Sparkles :size="17" /></div><span>Agent Studio</span></div><div class="auth-card__intro"><span class="page-heading__kicker">PRIVATE WORKSPACE</span><h1>{{ authMode === 'login' ? '连接你的工作台' : '初始化工作区' }}</h1><p>{{ authMode === 'login' ? '登录后读取项目、模板、任务和私有 Provider 配置。' : '首次启动时使用部署环境中的 SETUP_TOKEN 创建首位管理员。' }}</p></div><div v-if="errorMessage" class="config-error auth-card__error">{{ errorMessage }}</div><div class="config-segment auth-card__segment"><button type="button" :class="{ active: authMode === 'login' }" @click="authMode = 'login'">账号登录</button><button type="button" :class="{ active: authMode === 'setup' }" @click="authMode = 'setup'">首次初始化</button></div><form @submit.prevent="authMode === 'login' ? login() : setupFirstAdmin()"><label v-if="authMode === 'setup'" class="field-label">组织名称<input v-model="organizationName" autocomplete="organization" placeholder="你的团队或项目名称" required /></label><label v-if="authMode === 'setup'" class="field-label">启动令牌<input v-model="setupToken" type="password" autocomplete="off" placeholder="SETUP_TOKEN" required /></label><label class="field-label">邮箱<input v-model="email" type="email" autocomplete="username" placeholder="you@example.com" required /></label><label class="field-label">密码<input v-model="password" type="password" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" minlength="12" maxlength="128" placeholder="至少 12 个字符" required /></label><button class="button button--primary button--wide" type="submit" :disabled="loginBusy"><LoaderCircle v-if="loginBusy" class="spin" :size="16" />{{ loginBusy ? '正在连接…' : authMode === 'login' ? '登录工作区' : '创建管理员并进入' }}<ArrowRight v-if="!loginBusy" :size="16" /></button></form><div class="auth-card__foot"><LockKeyhole :size="14" />会话由 Platform API 管理 · 默认不共享私有数据</div><button v-if="signedIn" class="text-button auth-card__logout" type="button" @click="logout"><LogOut :size="14" />退出当前会话</button></section></div>
+    <div v-if="showLogin" class="auth-layer"><section class="auth-card"><div class="auth-card__brand"><div class="brand-mark"><Sparkles :size="17" /></div><span>Agent Studio</span></div><div class="auth-card__intro"><span class="page-heading__kicker">PRIVATE WORKSPACE</span><h1>{{ authMode === 'login' ? '连接你的工作台' : authMode === 'register' ? '创建工作区账号' : '初始化工作区' }}</h1><p>{{ authMode === 'login' ? '登录后读取项目、模板、任务和私有 Provider 配置。' : authMode === 'register' ? '注册后请从验证邮件确认地址，再登录工作区。' : '首次启动时使用部署环境中的 SETUP_TOKEN 创建首位管理员。' }}</p></div><div v-if="errorMessage" class="config-error auth-card__error">{{ errorMessage }}</div><div class="config-segment auth-card__segment"><button type="button" :class="{ active: authMode === 'login' }" @click="authMode = 'login'">账号登录</button><button type="button" :class="{ active: authMode === 'register' }" @click="authMode = 'register'">注册账号</button><button type="button" :class="{ active: authMode === 'setup' }" @click="authMode = 'setup'">首次初始化</button></div><form @submit.prevent="authMode === 'login' ? login() : authMode === 'register' ? registerAccount() : setupFirstAdmin()"><label v-if="authMode === 'setup'" class="field-label">组织名称<input v-model="organizationName" autocomplete="organization" placeholder="你的团队或项目名称" required /></label><label v-if="authMode === 'setup'" class="field-label">启动令牌<input v-model="setupToken" type="password" autocomplete="off" placeholder="SETUP_TOKEN" required /></label><label class="field-label">邮箱<input v-model="email" type="email" autocomplete="username" placeholder="you@example.com" required /></label><label class="field-label">密码<input v-model="password" type="password" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" minlength="12" maxlength="128" placeholder="至少 12 个字符" required /></label><button class="button button--primary button--wide" type="submit" :disabled="loginBusy"><LoaderCircle v-if="loginBusy" class="spin" :size="16" />{{ loginBusy ? '正在连接…' : authMode === 'login' ? '登录工作区' : authMode === 'register' ? '发送验证邮件' : '创建管理员并进入' }}<ArrowRight v-if="!loginBusy" :size="16" /></button></form><div class="auth-card__foot"><LockKeyhole :size="14" />会话由 Platform API 管理 · 默认不共享私有数据</div><button v-if="signedIn" class="text-button auth-card__logout" type="button" @click="logout"><LogOut :size="14" />退出当前会话</button></section></div>
 
     <div v-if="toastMessage" class="toast"><span class="toast__icon"><Check :size="14" /></span>{{ toastMessage }}</div>
   </div>

@@ -110,6 +110,14 @@ export const api = {
     this.setSession(result.accessToken)
     return result
   },
+  register: (email: string, password: string) => request<void>('/api/v1/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  }),
+  verifyEmail: (tokenValue: string) => request<void>('/api/v1/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token: tokenValue }),
+  }),
   async setupFirstAdmin(value: { setupToken: string; organizationName: string; email: string; password: string }) {
     const result = await request<{ accessToken: string; expiresAt: string }>('/api/v1/setup/first-admin', {
       method: 'POST',
@@ -252,4 +260,11 @@ export const api = {
     username: string
     password: string
   }) => request<LoginProfile>('/api/v1/login-profiles', { method: 'POST', body: JSON.stringify(value) }),
+  updateLoginProfile: (profileId: string, value: Partial<Omit<LoginProfile, 'id'>> ) => request<LoginProfile>(`/api/v1/login-profiles/${profileId}`, {
+    method: 'PATCH', body: JSON.stringify(value),
+  }),
+  rotateLoginProfileCredentials: (profileId: string, username: string, password: string) => request<void>(`/api/v1/login-profiles/${profileId}/credentials/rotate`, {
+    method: 'POST', body: JSON.stringify({ username, password }),
+  }),
+  deleteLoginProfile: (profileId: string) => request<void>(`/api/v1/login-profiles/${profileId}`, { method: 'DELETE' }),
 }

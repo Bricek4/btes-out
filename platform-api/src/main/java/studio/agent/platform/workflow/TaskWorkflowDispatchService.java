@@ -6,6 +6,8 @@ import java.util.UUID;
 import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.Set;
+import java.nio.charset.StandardCharsets;
+import org.springframework.http.MediaType;
 import org.springframework.http.HttpHeaders;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,7 @@ import studio.agent.contracts.TaskType;
 import studio.agent.platform.config.PlatformProperties;
 import studio.agent.platform.config.RequiredPlatformSettings;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Durable hand-off from Platform's committed task row to Temporal. The outbox row is written in
@@ -25,6 +28,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 public class TaskWorkflowDispatchService {
   private static final int BATCH_SIZE = 8;
   private static final int MAX_ERROR_LENGTH = 120;
+  private static final ObjectMapper JSON = new ObjectMapper();
 
   private final JdbcClient jdbc;
   private final RestClient workflow;
@@ -100,24 +104,30 @@ public class TaskWorkflowDispatchService {
       DispatchRow row = claimOne();
       if (row == null) return;
       try {
-        workflow.post()
-            .uri("/internal/workflows/tasks/{taskId}/start", row.taskId())
-            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .body(Map.of(
+        var startPayload = Map.of(
+                "taskId", row.taskId().toString(),
                 "projectId", row.projectId().toString(),
                 "type", row.taskType(),
                 "sourceReference", row.sourceReference(),
                 "templateVersionReference", row.templateVersionReference(),
                 "parametersReference", row.parametersReference(),
                 "providerProfileReference", row.providerProfileReference(),
-                "requiresApproval", row.requiresApproval()))
+                "requiresApproval", row.requiresApproval());
+        String startBody = json(startPayload);
+        workflow.post()
+            .uri("/internal/workflows/tasks/{taskId}/start", row.taskId())
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON).contentLength(startBody.getBytes(StandardCharsets.UTF_8).length)
+            .body(startBody)
             .retrieve()
             .toBodilessEntity();
         markDispatched(row.taskId());
       } catch (RestClientResponseException failure) {
-        // A deterministic duplicate is safe: the bridge compares the original opaque input.
-        if (failure.getStatusCode().value() == 409) {
-          markDispatched(row.taskId());
+        if (failure.getStatusCode().value() == 409
+            && failure.getResponseBodyAsString().contains("WORKFLOW_INPUT_CONFLICT")) {
+          // The workflow id already belongs to a different opaque input. Retrying would loop
+          // forever and leave the task looking queued, so surface a terminal dispatch failure.
+          markPermanentFailure(row, "WORKFLOW_INPUT_CONFLICT");
         } else {
           markFailure(row, "WORKFLOW_HTTP_" + failure.getStatusCode().value());
         }
@@ -138,9 +148,11 @@ public class TaskWorkflowDispatchService {
           body.put("decision", row.decision());
           if (row.approvedReference() != null) body.put("approvedReference", row.approvedReference());
         }
+        String commandBody = json(body);
         workflow.post().uri("/internal/workflows/tasks/{taskId}/{action}", row.taskId(), row.action())
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-            .body(body)
+            .contentType(MediaType.APPLICATION_JSON).contentLength(commandBody.getBytes(StandardCharsets.UTF_8).length)
+            .body(commandBody)
             .retrieve().toBodilessEntity();
         markCommandDelivered(row.id());
       } catch (RestClientResponseException failure) {
@@ -189,6 +201,20 @@ public class TaskWorkflowDispatchService {
         .param("next", OffsetDateTime.now().plusSeconds(delay)).param("error", safe).param("task", row.taskId()).update();
   }
 
+  private void markPermanentFailure(DispatchRow row, String code) {
+    OffsetDateTime now = OffsetDateTime.now();
+    String safe = code.substring(0, Math.min(MAX_ERROR_LENGTH, code.length()));
+    jdbc.sql("UPDATE task_workflow_dispatch SET dispatched_at=:now,last_error_code=:error WHERE task_id=:task")
+        .param("now", now).param("error", safe).param("task", row.taskId()).update();
+    jdbc.sql("UPDATE tasks SET status='FAILED',failure_code=:error,updated_at=:now WHERE id=:task AND status='QUEUED'")
+        .param("error", safe).param("now", now).param("task", row.taskId()).update();
+    Long sequence = jdbc.sql("SELECT COALESCE(MAX(sequence),0)+1 FROM task_events WHERE task_id=:task")
+        .param("task", row.taskId()).query(Long.class).single();
+    jdbc.sql("INSERT INTO task_events(task_id,sequence,status,failure_code,event_type,message,details,occurred_at) VALUES(:task,:sequence,'FAILED',:error,'DISPATCH','Workflow input was rejected',CAST(:details AS jsonb),:now)")
+        .param("task", row.taskId()).param("sequence", sequence).param("error", safe)
+        .param("details", "{\"reasonCode\":\"" + safe + "\"}").param("now", now).update();
+  }
+
   private CommandRow claimCommand() {
     OffsetDateTime now = OffsetDateTime.now();
     return jdbc.sql("""
@@ -219,6 +245,11 @@ public class TaskWorkflowDispatchService {
   static String workflowId(UUID taskId) {
     if (taskId == null) throw new IllegalArgumentException("task id is required");
     return "task-" + taskId;
+  }
+
+  private static String json(Object value) {
+    try { return JSON.writeValueAsString(value); }
+    catch (Exception invalid) { throw new IllegalStateException("workflow request serialization failed"); }
   }
 
   private record DispatchRow(UUID taskId, UUID projectId, String taskType, String sourceReference,
