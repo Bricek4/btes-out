@@ -22,26 +22,42 @@ public final class HttpTaskActivities implements TaskActivities {
   private final URI endpoint;
   private final String token;
   private final ObjectMapper json;
+  private final PlatformStatusReporter statusReporter;
 
   public HttpTaskActivities(URI agentWorkerBaseUrl, String agentWorkerToken) {
     this(agentWorkerBaseUrl, agentWorkerToken, HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(5)).build(), new ObjectMapper());
+        .connectTimeout(Duration.ofSeconds(5)).build(), new ObjectMapper(),
+        PlatformStatusReporter.noOp());
   }
 
   HttpTaskActivities(URI baseUrl, String token, HttpClient http, ObjectMapper json) {
+    this(baseUrl, token, http, json, PlatformStatusReporter.noOp());
+  }
+
+  HttpTaskActivities(URI baseUrl, String token, PlatformStatusReporter statusReporter) {
+    this(baseUrl, token, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
+        new ObjectMapper(), statusReporter);
+  }
+
+  HttpTaskActivities(URI baseUrl, String token, HttpClient http, ObjectMapper json,
+      PlatformStatusReporter statusReporter) {
     this.endpoint = Objects.requireNonNull(baseUrl, "agent worker URL is required");
     this.token = requireText(token, "AGENT_WORKER_TOKEN");
     this.http = Objects.requireNonNull(http, "http client is required");
     this.json = Objects.requireNonNull(json, "json mapper is required");
+    this.statusReporter = Objects.requireNonNull(statusReporter, "status reporter is required");
   }
 
   @Override
   public ActivityOutcome execute(WorkflowInput input) {
     Objects.requireNonNull(input, "workflow input is required");
+    statusReporter.report(new PlatformStatusUpdate(input.taskId(),
+        studio.agent.contracts.TaskStatus.RUNNING, 0, null, null));
     String requestBody;
     try {
       requestBody = json.writeValueAsString(input);
     } catch (JacksonException failure) {
+      reportFailure(input.taskId(), "AGENT_REQUEST_SERIALIZATION_FAILED");
       throw new IllegalStateException("AGENT_REQUEST_SERIALIZATION_FAILED");
     }
     URI taskEndpoint = endpoint.resolve("/internal/tasks/" + input.taskId() + "/execute");
@@ -64,6 +80,7 @@ public final class HttpTaskActivities implements TaskActivities {
     try (InputStream body = response.body()) {
       long declaredLength = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
       if (declaredLength > MAX_RESPONSE_BYTES) {
+        reportFailure(input.taskId(), "AGENT_RESPONSE_TOO_LARGE");
         throw ApplicationFailure.newNonRetryableFailure("AGENT_RESPONSE_TOO_LARGE", "response exceeds limit");
       }
       responseBody = body.readNBytes(MAX_RESPONSE_BYTES + 1);
@@ -71,9 +88,11 @@ public final class HttpTaskActivities implements TaskActivities {
       throw new IllegalStateException("AGENT_RESPONSE_READ_FAILED");
     }
     if (responseBody.length > MAX_RESPONSE_BYTES) {
+      reportFailure(input.taskId(), "AGENT_RESPONSE_TOO_LARGE");
       throw ApplicationFailure.newNonRetryableFailure("AGENT_RESPONSE_TOO_LARGE", "response exceeds limit");
     }
     if (response.statusCode() >= 400 && response.statusCode() < 500) {
+      reportFailure(input.taskId(), "AGENT_WORKER_REJECTED");
       throw ApplicationFailure.newNonRetryableFailure("AGENT_WORKER_REJECTED", "HTTP_4XX");
     }
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -81,11 +100,29 @@ public final class HttpTaskActivities implements TaskActivities {
     }
     try {
       ActivityOutcome result = json.readValue(responseBody, ActivityOutcome.class);
-      if (result == null) throw new IllegalStateException("AGENT_RESULT_INVALID");
+      if (result == null) {
+        reportFailure(input.taskId(), "AGENT_RESULT_INVALID");
+        throw ApplicationFailure.newNonRetryableFailure("AGENT_RESULT_INVALID", "empty outcome");
+      }
+      reportOutcome(input.taskId(), result);
       return result;
     } catch (JacksonException failure) {
+      reportFailure(input.taskId(), "AGENT_RESULT_INVALID");
       throw ApplicationFailure.newNonRetryableFailure("AGENT_RESULT_INVALID", "response is not a valid outcome");
     }
+  }
+
+  private void reportOutcome(String taskId, ActivityOutcome result) {
+    Integer progress = result.status() == studio.agent.contracts.TaskStatus.SUCCEEDED ? 100 : null;
+    String failure = result.status() == studio.agent.contracts.TaskStatus.CANCELED
+        ? "AGENT_CANCELED" : result.failureCode();
+    statusReporter.report(new PlatformStatusUpdate(taskId, result.status(), progress,
+        result.artifactReference(), failure));
+  }
+
+  private void reportFailure(String taskId, String failureCode) {
+    statusReporter.report(new PlatformStatusUpdate(taskId,
+        studio.agent.contracts.TaskStatus.FAILED, null, null, failureCode));
   }
 
   private static String requireText(String value, String field) {

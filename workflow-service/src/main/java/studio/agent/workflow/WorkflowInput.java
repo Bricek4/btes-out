@@ -27,16 +27,14 @@ public record WorkflowInput(
 
   public WorkflowInput {
     requirePathSegment(taskId, "taskId");
-    requireText(projectId, "projectId");
+    requirePathSegment(projectId, "projectId");
     Objects.requireNonNull(type, "type is required");
-    requireText(sourceReference, "sourceReference");
-    requireText(templateVersionReference, "templateVersionReference");
-    requireText(parametersReference, "parametersReference");
-    requireText(providerProfileReference, "providerProfileReference");
-    if (approvedReference != null && (approvedReference.isBlank() || approvedReference.length() > 2_048
-        || !approvedReference.startsWith("approval://screenshot-route/"))) {
-      throw new IllegalArgumentException("approvedReference is invalid");
-    }
+    requireOpaqueReference(sourceReference, "source://", "sourceReference");
+    requireOpaqueReference(templateVersionReference, "template://", "templateVersionReference");
+    requireOpaqueReference(parametersReference, "parameters://", "parametersReference");
+    requireOpaqueReference(providerProfileReference, "provider://", "providerProfileReference");
+    if (approvedReference != null) requireOpaqueReference(approvedReference,
+        "approval://screenshot-route/", "approvedReference");
   }
 
   public WorkflowInput withApprovedReference(String reference) {
@@ -44,11 +42,20 @@ public record WorkflowInput(
         parametersReference, providerProfileReference, requiresApproval, reference);
   }
 
-  private static void requireText(String value, String field) {
-    if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " is required");
+  static void requireOpaqueReference(String value, String prefix, String field) {
+    if (value == null || value.length() > 2_048 || !value.startsWith(prefix)
+        || !value.matches("[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9][A-Za-z0-9._~:/-]*")) {
+      throw new IllegalArgumentException(field + " must be an opaque reference");
+    }
   }
 
-  private static void requirePathSegment(String value, String field) {
+  static void requireMachineCode(String value, String field) {
+    if (value == null || !value.matches("[A-Z][A-Z0-9_]{0,63}")) {
+      throw new IllegalArgumentException(field + " must be a machine code");
+    }
+  }
+
+  static void requirePathSegment(String value, String field) {
     if (value == null || !value.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,79}")) {
       throw new IllegalArgumentException(field + " must be a safe identifier");
     }

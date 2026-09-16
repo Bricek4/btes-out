@@ -34,10 +34,13 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
   private TaskApprovalRequest approvalRequest;
   private String approvedReference;
   private String taskId;
+  private WorkflowInput workflowInput;
 
   @Override
   public TaskWorkflowResult run(WorkflowInput input) {
+    workflowInput = input;
     taskId = input.taskId();
+    approvedReference = input.approvedReference();
     transition(TaskStatus.RUNNING);
 
     if (input.requiresApproval()) {
@@ -109,7 +112,8 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
 
   @Override
   public void approve(ApprovalDecision decision) {
-    if (status != TaskStatus.WAITING_FOR_APPROVAL || decision == null || !decision.valid()) return;
+    if (status != TaskStatus.WAITING_FOR_APPROVAL || decision == null || !decision.valid()
+        || !decision.matches(approvalRequest)) return;
     approvalDecision = decision;
     if (decision.rejected()) {
       cancelRequested = true;
@@ -121,6 +125,11 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
   public TaskWorkflowState state() {
     return new TaskWorkflowState(status, artifactReference, failureCode, approvalPending,
         pauseRequested, cancelRequested, approvalRequest);
+  }
+
+  @Override
+  public WorkflowInput startInput() {
+    return workflowInput;
   }
 
   private TaskWorkflowResult awaitApproval() {
