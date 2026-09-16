@@ -76,7 +76,7 @@ const library = [
         <div><strong>个人工作区</strong><span>单组织 · Member</span></div>
         <ChevronRight :size="15" />
       </div>
-      <div class="profile-chip"><div class="avatar">A</div><div><strong>Alex Chen</strong><span>在线</span></div><span class="status-dot" /></div>
+      <div class="profile-chip"><div class="avatar">U</div><div><strong>当前账号</strong><span>在线</span></div><span class="status-dot" /></div>
     </div>
   </aside>
 </template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowUpRight, Clock3, Ellipsis, Pause, Play, XCircle } from 'lucide-vue-next'
+import { ArrowUpRight, Clock3 } from 'lucide-vue-next'
 import type { Task, TaskStatus } from '../types'
 
 defineProps<{ tasks: Task[] }>()
@@ -26,7 +26,7 @@ function relative(value: string) {
           <td><div class="task-name"><div class="task-type-dot" :class="`task-type-dot--${task.type.toLowerCase()}`" /><div><strong>{{ typeLabels[task.type] }}</strong><span>{{ task.taskId.slice(0, 8) }} · {{ task.projectId.slice(0, 8) }}</span></div></div></td>
           <td><span class="status-pill" :class="`status-pill--${task.status.toLowerCase()}`"><span class="status-pill__dot" />{{ labels[task.status] }}</span></td>
           <td><span class="task-time"><Clock3 :size="14" />{{ relative(task.updatedAt) }}</span></td>
-          <td class="task-table__actions"><button class="icon-button" type="button" aria-label="打开任务详情" @click.stop="emit('open', task)"><ArrowUpRight :size="16" /></button><button class="icon-button" type="button" aria-label="任务操作" @click.stop><Ellipsis :size="17" /></button></td>
+          <td class="task-table__actions"><button class="icon-button" type="button" aria-label="打开任务详情" @click.stop="emit('open', task)"><ArrowUpRight :size="16" /></button></td>
         </tr>
         <tr v-if="tasks.length === 0"><td colspan="4"><div class="table-empty"><div class="table-empty__icon"><Clock3 :size="20" /></div><strong>还没有任务</strong><span>从右上角发起一个工作流，结果会显示在这里</span></div></td></tr>
       </tbody>
