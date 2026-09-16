@@ -20,4 +20,15 @@ class ArtifactRendererTest {
     assertFalse(html.contains("javascript:"));
     assertTrue(html.contains("viewport"));
   }
+
+  @Test void htmlSanitizerRemovesMalformedAndEntityObfuscatedExecutableMarkup() {
+    var html = new HtmlRenderer().render(
+        "<main><img src=x onerror=alert(1)><a href=java&#x73;cript:alert(2)>open</a>" +
+            "<svg><script>alert(3)</script></svg></main>", "Safe page");
+
+    assertFalse(html.toLowerCase().contains("onerror"));
+    assertFalse(html.toLowerCase().contains("javascript:"));
+    assertFalse(html.toLowerCase().contains("<svg"));
+    assertTrue(html.contains("open"));
+  }
 }

@@ -1,0 +1,208 @@
+package studio.agent.worker;
+
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.client.RestClient;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+/** Agent-scoped Platform API client. Presigned object URLs never receive worker authorization. */
+public final class AgentPlatformClient {
+  private static final int MAX_SOURCE_BYTES = 20_000_000;
+  private static final int MAX_ARTIFACT_BYTES = 20_000_000;
+  private static final int MAX_MANIFEST_BYTES = 1_000_000;
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final TypeReference<Map<String, Object>> STRING_OBJECT_MAP = new TypeReference<>() { };
+
+  private final RestClient platform;
+  private final String token;
+
+  public AgentPlatformClient(String platformBaseUrl, String agentWorkerToken) {
+    this.platform = RestClient.builder().baseUrl(requireHttpUri(platformBaseUrl).toString()).build();
+    this.token = requireText(agentWorkerToken, "agent worker token is required");
+  }
+
+  public ProviderConnection provider(UUID taskId) {
+    Objects.requireNonNull(taskId, "task id is required");
+    Map<?, ?> response;
+    try {
+      response = platform.post().uri("/internal/tasks/{taskId}/provider-credential", taskId)
+          .header(HttpHeaders.AUTHORIZATION, bearer()).retrieve().body(Map.class);
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("PROVIDER_CREDENTIAL_UNAVAILABLE");
+    }
+    if (response == null) throw new PlatformOperationException("PROVIDER_CREDENTIAL_UNAVAILABLE");
+    return new ProviderConnection(requireText(value(response, "endpoint"), "provider endpoint is unavailable"),
+        requireText(value(response, "model"), "provider model is unavailable"),
+        requireText(value(response, "apiKey"), "provider credential is unavailable"), options(response.get("options")));
+  }
+
+  public byte[] fetchSource(URI presignedGetUrl) {
+    URI source = requireHttpUri(presignedGetUrl == null ? null : presignedGetUrl.toString());
+    try {
+      byte[] bytes = RestClient.create().get().uri(source).retrieve().body(byte[].class);
+      if (bytes == null || bytes.length == 0) throw new PlatformOperationException("SOURCE_EMPTY");
+      if (bytes.length > MAX_SOURCE_BYTES) throw new PlatformOperationException("SOURCE_TOO_LARGE");
+      return bytes;
+    } catch (PlatformOperationException failure) {
+      throw failure;
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("SOURCE_FETCH_FAILED");
+    }
+  }
+
+  public PublishedArtifact publish(UUID taskId, ArtifactUpload upload) {
+    Objects.requireNonNull(taskId, "task id is required");
+    Objects.requireNonNull(upload, "artifact upload is required");
+    byte[] bytes = upload.bytes();
+    String sha256 = sha256(bytes);
+    Map<?, ?> reservation;
+    try {
+      reservation = platform.post().uri("/internal/tasks/{taskId}/artifacts/presign", taskId)
+          .header(HttpHeaders.AUTHORIZATION, bearer())
+          .body(Map.of("name", upload.name(), "kind", upload.kind().name(), "mediaType", upload.mediaType(),
+              "sizeBytes", bytes.length, "sha256", sha256))
+          .retrieve().body(Map.class);
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("ARTIFACT_RESERVATION_FAILED");
+    }
+    if (reservation == null) throw new PlatformOperationException("ARTIFACT_RESERVATION_FAILED");
+    UUID artifactId = uuid(reservation, "artifactId");
+    UUID reservationId = uuid(reservation, "reservationId");
+    URI putUrl = requireHttpUri(value(reservation, "putUrl"));
+    try {
+      String checksumSha256 = java.util.Base64.getEncoder().encodeToString(HexFormat.of().parseHex(sha256));
+      RestClient.create().put().uri(putUrl).contentType(MediaType.parseMediaType(upload.mediaType()))
+          .headers(headers -> {
+            headers.setContentLength(bytes.length);
+            headers.set("x-amz-checksum-sha256", checksumSha256);
+          }).body(bytes).retrieve().toBodilessEntity();
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("ARTIFACT_UPLOAD_FAILED");
+    }
+    Map<?, ?> completed;
+    try {
+      completed = platform.post().uri("/internal/tasks/{taskId}/artifacts/{artifactId}/complete", taskId, artifactId)
+          .header(HttpHeaders.AUTHORIZATION, bearer())
+          .body(Map.of("reservationId", reservationId.toString(), "manifest", upload.manifest()))
+          .retrieve().body(Map.class);
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("ARTIFACT_COMPLETION_FAILED");
+    }
+    if (completed == null || !Boolean.TRUE.equals(completed.get("completed"))
+        || !artifactId.equals(uuid(completed, "artifactId"))) {
+      throw new PlatformOperationException("ARTIFACT_COMPLETION_FAILED");
+    }
+    return new PublishedArtifact(artifactId, reservationId,
+        "artifact://" + upload.kind().referenceSegment + "/" + artifactId, sha256);
+  }
+
+  private static Map<String, Object> options(Object value) {
+    if (value == null) return Map.of();
+    if (value instanceof Map<?, ?> map) {
+      var result = new java.util.LinkedHashMap<String, Object>();
+      map.forEach((key, option) -> result.put(String.valueOf(key), option));
+      return Map.copyOf(result);
+    }
+    if (value instanceof String json) {
+      try { return JSON.readValue(json, STRING_OBJECT_MAP); }
+      catch (JacksonException invalid) { throw new PlatformOperationException("PROVIDER_OPTIONS_INVALID"); }
+    }
+    throw new PlatformOperationException("PROVIDER_OPTIONS_INVALID");
+  }
+
+  private static String value(Map<?, ?> map, String key) {
+    Object value = map.get(key);
+    return value == null ? null : String.valueOf(value);
+  }
+
+  private static UUID uuid(Map<?, ?> map, String key) {
+    try { return UUID.fromString(requireText(value(map, key), "platform response is incomplete")); }
+    catch (IllegalArgumentException invalid) { throw new PlatformOperationException("PLATFORM_RESPONSE_INVALID"); }
+  }
+
+  private static URI requireHttpUri(String value) {
+    try {
+      URI uri = URI.create(requireText(value, "URL is required"));
+      if (!Set.of("http", "https").contains(uri.getScheme() == null ? "" : uri.getScheme().toLowerCase())
+          || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null) {
+        throw new IllegalArgumentException("URL is invalid");
+      }
+      return uri;
+    } catch (RuntimeException invalid) {
+      if (invalid instanceof IllegalArgumentException argument && "URL is invalid".equals(argument.getMessage())) throw argument;
+      throw new IllegalArgumentException("URL is invalid");
+    }
+  }
+
+  private static String requireText(String value, String message) {
+    if (value == null || value.isBlank() || "null".equals(value)) throw new IllegalArgumentException(message);
+    return value;
+  }
+
+  private String bearer() { return "Bearer " + token; }
+
+  private static String sha256(byte[] bytes) {
+    try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+    catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException("SHA-256 unavailable"); }
+  }
+
+  public enum ArtifactKind {
+    DOC("docs"), HTML("site"), MANIFEST("manifests");
+    private final String referenceSegment;
+    ArtifactKind(String referenceSegment) { this.referenceSegment = referenceSegment; }
+  }
+
+  public record ArtifactUpload(String name, ArtifactKind kind, String mediaType, byte[] bytes, String manifest) {
+    public ArtifactUpload {
+      if (kind == null) throw new IllegalArgumentException("Agent artifact kind must be DOC, HTML or MANIFEST");
+      if (name == null || name.isBlank() || name.startsWith("/") || name.contains("\\")
+          || java.util.Arrays.asList(name.split("/")).contains("..") || name.length() > 240) {
+        throw new IllegalArgumentException("artifact name is invalid");
+      }
+      String expectedType = switch (kind) {
+        case DOC -> "text/markdown";
+        case HTML -> "text/html";
+        case MANIFEST -> "application/json";
+      };
+      MediaType actual;
+      try { actual = MediaType.parseMediaType(requireText(mediaType, "artifact media type is required")); }
+      catch (RuntimeException invalid) { throw new IllegalArgumentException("artifact media type is invalid"); }
+      if (!MediaType.parseMediaType(expectedType).isCompatibleWith(actual)) {
+        throw new IllegalArgumentException("artifact media type does not match its kind");
+      }
+      bytes = bytes == null ? null : bytes.clone();
+      if (bytes == null || bytes.length == 0 || bytes.length > MAX_ARTIFACT_BYTES) {
+        throw new IllegalArgumentException("artifact bytes are invalid");
+      }
+      manifest = requireText(manifest, "artifact manifest is required");
+      if (manifest.getBytes(StandardCharsets.UTF_8).length > MAX_MANIFEST_BYTES) {
+        throw new IllegalArgumentException("artifact manifest is too large");
+      }
+      try {
+        JsonNode manifestJson = JSON.readTree(manifest);
+        if (!manifestJson.isObject()) throw new IllegalArgumentException("artifact manifest must be a JSON object");
+      } catch (JacksonException invalid) {
+        throw new IllegalArgumentException("artifact manifest is invalid");
+      }
+    }
+    @Override public byte[] bytes() { return bytes.clone(); }
+  }
+
+  public record PublishedArtifact(UUID artifactId, UUID reservationId, String reference, String sha256) { }
+
+  static final class PlatformOperationException extends IllegalStateException {
+    PlatformOperationException(String code) { super(code); }
+  }
+}
