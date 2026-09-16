@@ -2,24 +2,24 @@ spring:
   application:
     name: platform-api
   datasource:
-    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/agent_studio}
-    username: ${DATABASE_USER:agent_studio}
-    password: ${DATABASE_PASSWORD:agent_studio}
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USER}
+    password: ${DATABASE_PASSWORD}
   jackson:
     deserialization:
       fail-on-unknown-properties: true
 server:
   port: ${PLATFORM_API_PORT:8080}
 agent-studio:
-  setup-token: ${SETUP_TOKEN:change-me-before-first-run}
-  encryption-key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
-  agent-worker-token: ${AGENT_WORKER_TOKEN:change-agent-token}
-  browser-worker-token: ${BROWSER_WORKER_TOKEN:change-browser-token}
+  setup-token: ${SETUP_TOKEN:}
+  encryption-key: ${ENCRYPTION_KEY:}
+  agent-worker-token: ${AGENT_WORKER_TOKEN:}
+  browser-worker-token: ${BROWSER_WORKER_TOKEN:}
   agent-worker-base-url: ${AGENT_WORKER_BASE_URL:http://agent-worker:8082}
   object-store:
-    endpoint: ${S3_ENDPOINT:http://minio:9000}
-    region: ${S3_REGION:us-east-1}
-    bucket: ${S3_BUCKET:agent-studio}
-    access-key: ${S3_ACCESS_KEY:minioadmin}
-    secret-key: ${S3_SECRET_KEY:minioadmin}
+    endpoint: ${S3_ENDPOINT:}
+    region: ${S3_REGION:}
+    bucket: ${S3_BUCKET:}
+    access-key: ${S3_ACCESS_KEY:}
+    secret-key: ${S3_SECRET_KEY:}
     path-style: ${S3_PATH_STYLE:true}

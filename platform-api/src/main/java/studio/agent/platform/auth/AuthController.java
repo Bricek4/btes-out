@@ -23,5 +23,5 @@ class AuthController {
   @PostMapping("/auth/login") AuthService.IssuedToken login(@Valid @RequestBody Credentials r){return auth.login(r.email(),r.password());}
   @PostMapping("/auth/password-reset/request") ResponseEntity<Void> request(@RequestBody Map<String,String> r){auth.requestReset(r.get("email"));return ResponseEntity.accepted().build();}
   @PostMapping("/auth/password-reset/confirm") ResponseEntity<Void> reset(@Valid @RequestBody Reset r){auth.reset(r.token(),r.password());return ResponseEntity.noContent().build();}
-  @PostMapping("/auth/logout") ResponseEntity<Void> logout(@RequestHeader("Authorization") String authorization){auth.logout(authorization.substring(7));return ResponseEntity.noContent().build();}
+  @PostMapping("/auth/logout") ResponseEntity<Void> logout(@RequestHeader("Authorization") String authorization){if(authorization==null||!authorization.startsWith("Bearer ")||authorization.length()==7)throw new IllegalArgumentException("Bearer token is required");auth.logout(authorization.substring(7));return ResponseEntity.noContent().build();}
 }

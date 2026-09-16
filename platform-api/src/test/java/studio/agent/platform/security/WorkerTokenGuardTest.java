@@ -14,4 +14,10 @@ class WorkerTokenGuardTest {
     assertThrows(SecurityException.class, () -> guard.requireBrowser("Bearer agent-secret"));
     assertThrows(SecurityException.class, () -> guard.requireAgent(null));
   }
+
+  @Test void distinguishes_browser_artifact_uploads_from_agent_credentials() {
+    var guard = new WorkerTokenGuard("agent-secret", "browser-secret");
+    assertDoesNotThrow(() -> guard.requireBrowser("Bearer browser-secret"));
+    assertThrows(SecurityException.class, () -> guard.requireAgent("Bearer browser-secret"));
+  }
 }
