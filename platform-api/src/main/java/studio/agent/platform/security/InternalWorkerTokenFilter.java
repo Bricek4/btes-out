@@ -14,9 +14,10 @@ public final class InternalWorkerTokenFilter extends OncePerRequestFilter {
   @Override protected boolean shouldNotFilter(HttpServletRequest request) { return !request.getRequestURI().startsWith("/internal/"); }
   @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain) throws ServletException,IOException {
     try {
-      String path=request.getRequestURI();
-      if (path.contains("provider-credential") || path.contains("worker-context/agent")) guard.requireAgent(request.getHeader("Authorization"));
-      else guard.requireBrowser(request.getHeader("Authorization"));
+      var scope=InternalWorkerScope.forPath(request.getRequestURI(), null);
+      if (scope==InternalWorkerScope.AGENT) guard.requireAgent(request.getHeader("Authorization"));
+      else if(scope==InternalWorkerScope.BROWSER) guard.requireBrowser(request.getHeader("Authorization"));
+      else { try { guard.requireAgent(request.getHeader("Authorization")); } catch(SecurityException denied){ guard.requireBrowser(request.getHeader("Authorization")); } }
       chain.doFilter(request,response);
     } catch (SecurityException e) { response.sendError(HttpServletResponse.SC_FORBIDDEN,"WORKER_TOKEN_INVALID"); }
   }
