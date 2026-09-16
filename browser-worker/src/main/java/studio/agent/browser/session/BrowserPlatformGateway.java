@@ -15,6 +15,8 @@ import tools.jackson.databind.ObjectMapper;
 /** Browser-token-only adapter: credentials remain here and are not returned by session APIs. */
 @Component
 public final class BrowserPlatformGateway implements LoginCredentialResolver, ArtifactPublisher {
+  private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
+  private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
   private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
   private final ObjectMapper json = new ObjectMapper(); private final URI platform; private final String token;
   public BrowserPlatformGateway(@Value("${PLATFORM_API_URL}") String platform, @Value("${BROWSER_WORKER_TOKEN}") String token) { this.platform=URI.create(platform); this.token=token; }
@@ -33,13 +35,13 @@ public final class BrowserPlatformGateway implements LoginCredentialResolver, Ar
     try {
       URI ref = URI.create(artifact.reference()); String[] parts = ref.getPath().split("/"); UUID taskId=UUID.fromString(ref.getHost());
       Map<?,?> reserved=post("/internal/tasks/"+taskId+"/artifacts/presign", Map.of("name",parts[2],"kind","SCREENSHOT","mediaType","image/png","sizeBytes",artifact.bytes().length,"sha256",artifact.sha256()));
-      put(URI.create(String.valueOf(reserved.get("putUrl"))), artifact.bytes());
-      post("/internal/tasks/"+taskId+"/artifacts/"+reserved.get("artifactId")+"/complete", Map.of("manifest","{}"));
-    } catch (Exception e) { throw new IllegalStateException("screenshot artifact publication failed"); }
+      put(URI.create(String.valueOf(reserved.get("putUrl"))), artifact.bytes(), artifact.sha256());
+      post("/internal/tasks/"+taskId+"/artifacts/"+reserved.get("artifactId")+"/complete", Map.of("manifest","{}", "reservationId", String.valueOf(reserved.get("reservationId"))));
+    } catch (Exception e) { throw new IllegalStateException("ARTIFACT_PUBLICATION_FAILED"); }
   }
-  private Map<?,?> get(String path) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).header("Authorization","Bearer "+token).GET().build()); }
-  private Map<?,?> post(String path,Object body) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).header("Authorization","Bearer "+token).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body))).build()); }
-  private Map<?,?> send(HttpRequest request) throws Exception { var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray()); if(response.statusCode()/100!=2) throw new IllegalStateException("platform request rejected"); return json.readValue(response.body(),Map.class); }
-  private void put(URI url,byte[] bytes) throws Exception { var response=http.send(HttpRequest.newBuilder(url).header("Content-Type","image/png").PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),HttpResponse.BodyHandlers.discarding()); if(response.statusCode()/100!=2) throw new IllegalStateException("artifact upload rejected"); }
+  private Map<?,?> get(String path) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).timeout(REQUEST_TIMEOUT).header("Authorization","Bearer "+token).GET().build()); }
+  private Map<?,?> post(String path,Object body) throws Exception { return send(HttpRequest.newBuilder(platform.resolve(path)).timeout(REQUEST_TIMEOUT).header("Authorization","Bearer "+token).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body))).build()); }
+  private Map<?,?> send(HttpRequest request) throws Exception { var response=http.send(request,HttpResponse.BodyHandlers.ofByteArray()); if(response.body().length>MAX_RESPONSE_BYTES) throw new IllegalStateException("PLATFORM_RESPONSE_TOO_LARGE"); if(response.statusCode()/100!=2) throw new IllegalStateException("PLATFORM_REQUEST_REJECTED"); return json.readValue(response.body(),Map.class); }
+  private void put(URI url,byte[] bytes,String sha256) throws Exception { String checksum=java.util.Base64.getEncoder().encodeToString(java.util.HexFormat.of().parseHex(sha256)); var response=http.send(HttpRequest.newBuilder(url).timeout(REQUEST_TIMEOUT).header("x-amz-checksum-sha256",checksum).PUT(HttpRequest.BodyPublishers.ofByteArray(bytes)).build(),HttpResponse.BodyHandlers.discarding()); if(response.statusCode()/100!=2) throw new IllegalStateException("ARTIFACT_UPLOAD_REJECTED"); }
   private static LocatorSpec parseLocator(String value) { String[] p=value.split(":",3); if(p.length==3&&"role".equals(p[0]))return LocatorSpec.role(p[1],p[2]); if(p.length==2&&"label".equals(p[0]))return LocatorSpec.label(p[1]); if(p.length==2&&"test-id".equals(p[0]))return LocatorSpec.testId(p[1]); return LocatorSpec.label(value); }
 }

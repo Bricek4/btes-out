@@ -25,7 +25,7 @@ public class BrowserWorkerConfiguration {
     return new PlaywrightBrowserService(browser, policy, new SessionRegistry(16, Duration.ofMinutes(10), Clock.systemUTC()), gateway, gateway,
         new BrowserLimits(Duration.ofSeconds(10), Duration.ofSeconds(20), 2, 1280, 720, 10_000_000, 20_000_000));
   }
-  @Bean FilterRegistrationBean<WorkerTokenFilter> browserWorkerToken(@Value("${BROWSER_WORKER_TOKEN}") String token) {
+  @Bean FilterRegistrationBean<WorkerTokenFilter> browserWorkerToken(@Value("${AGENT_WORKER_TOKEN}") String token) {
     var registration = new FilterRegistrationBean<>(new WorkerTokenFilter(token)); registration.addUrlPatterns("/internal/*"); registration.setOrder(-100); return registration;
   }
 }
