@@ -22,7 +22,7 @@ function relative(value: string) {
     <table class="task-table">
       <thead><tr><th>任务</th><th>状态</th><th>更新时间</th><th class="task-table__actions" /></tr></thead>
       <tbody>
-        <tr v-for="task in tasks" :key="task.taskId" class="task-row" @click="emit('open', task)">
+        <tr v-for="task in tasks" :key="task.taskId" class="task-row" tabindex="0" :aria-label="`打开${typeLabels[task.type]}任务`" @click="emit('open', task)" @keydown.enter="emit('open', task)" @keydown.space.prevent="emit('open', task)">
           <td><div class="task-name"><div class="task-type-dot" :class="`task-type-dot--${task.type.toLowerCase()}`" /><div><strong>{{ typeLabels[task.type] }}</strong><span>{{ task.taskId.slice(0, 8) }} · {{ task.projectId.slice(0, 8) }}</span></div></div></td>
           <td><span class="status-pill" :class="`status-pill--${task.status.toLowerCase()}`"><span class="status-pill__dot" />{{ labels[task.status] }}</span></td>
           <td><span class="task-time"><Clock3 :size="14" />{{ relative(task.updatedAt) }}</span></td>

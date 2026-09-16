@@ -224,9 +224,9 @@ async function save() {
 
 <template>
   <div class="modal-layer" @click.self="emit('close')">
-    <section class="modal-card config-modal">
+    <section class="modal-card config-modal" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
       <div class="modal-card__head">
-        <div><span class="section-head__eyebrow">CONFIGURATION</span><h2>{{ title }}</h2><p>{{ subtitle }}</p></div>
+        <div><span class="section-head__eyebrow">CONFIGURATION</span><h2 id="config-modal-title">{{ title }}</h2><p>{{ subtitle }}</p></div>
         <button class="icon-button" type="button" aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
       </div>
 
