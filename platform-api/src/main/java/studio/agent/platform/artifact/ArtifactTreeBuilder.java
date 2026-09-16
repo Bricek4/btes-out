@@ -12,8 +12,22 @@ final class ArtifactTreeBuilder {
 
   static List<Node> build(List<Entry> entries) {
     var root = new Branch("", "");
-    for (var entry : entries) {
-      var segments = segments(entry.name());
+    var normalized = entries.stream().map(entry -> new NamedEntry(entry, ArtifactZip.safeName(entry.name()))).toList();
+    var folderPaths = new java.util.HashSet<String>();
+    for (var named : normalized) {
+      var parts = named.path().split("/", -1);
+      var prefix = new StringBuilder();
+      for (int index = 0; index < parts.length - 1; index++) {
+        if (!prefix.isEmpty()) prefix.append('/');
+        prefix.append(parts[index]);
+        folderPaths.add(prefix.toString());
+      }
+    }
+    var used = new java.util.HashSet<String>();
+    for (var named : normalized) {
+      var entry = named.entry();
+      String safePath = ArtifactZip.uniqueName(named.path(), entry.artifactId(), folderPaths, used);
+      var segments = safePath.split("/", -1);
       var branch = root;
       for (int index = 0; index < segments.length - 1; index++) {
         String segment = segments[index];
@@ -43,20 +57,11 @@ final class ArtifactTreeBuilder {
   }
 
   private static String[] segments(String path) {
-    if (path == null || path.isBlank() || path.startsWith("/") || path.endsWith("/") || path.indexOf('\\') >= 0) {
-      throw new IllegalArgumentException("invalid artifact path");
-    }
-    var segments = path.split("/", -1);
-    for (var segment : segments) {
-      if (segment.isBlank() || ".".equals(segment) || "..".equals(segment)
-          || segment.chars().anyMatch(Character::isISOControl)) {
-        throw new IllegalArgumentException("invalid artifact path");
-      }
-    }
-    return segments;
+    return ArtifactZip.safeName(path).split("/", -1);
   }
 
   record Entry(UUID artifactId, String name, String kind, int version, String mediaType, long sizeBytes, String sha256) { }
+  private record NamedEntry(Entry entry, String path) { }
 
   record Node(String name, String path, String type, UUID artifactId, String kind, int version,
               String mediaType, long sizeBytes, String sha256, List<Node> children) { }

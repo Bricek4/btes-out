@@ -29,10 +29,14 @@ class ArtifactTreeBuilderTest {
     var id = UUID.randomUUID();
     org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
         () -> ArtifactTreeBuilder.build(List.of(entry(id, "../secret", "DOC"))));
-    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-        () -> ArtifactTreeBuilder.build(List.of(entry(id, "report\n.html", "HTML"))));
-    org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-        () -> ArtifactTreeBuilder.build(List.of(entry(id, "a.md", "DOC"), entry(UUID.randomUUID(), "a.md", "DOC"))));
+    var legacy = ArtifactTreeBuilder.build(List.of(entry(id, "./docs//report\n.html", "HTML")));
+    assertEquals("docs", legacy.getFirst().name());
+    assertEquals("report_.html", legacy.getFirst().children().getFirst().name());
+    var duplicate = ArtifactTreeBuilder.build(List.of(entry(id, "a//file.md", "DOC"),
+        entry(UUID.randomUUID(), "a/file.md", "DOC"), entry(UUID.randomUUID(), "a", "DOC")));
+    assertEquals(2, duplicate.size());
+    assertEquals("a", duplicate.getFirst().name());
+    assertEquals(2, duplicate.getFirst().children().size());
   }
 
   private static ArtifactTreeBuilder.Entry entry(UUID id, String name, String kind) {

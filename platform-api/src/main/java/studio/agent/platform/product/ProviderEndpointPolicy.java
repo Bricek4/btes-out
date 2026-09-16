@@ -1,26 +1,58 @@
 package studio.agent.platform.product;
 
+import jakarta.annotation.PreDestroy;
 import java.net.IDN;
 import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
+import java.time.Duration;
 import java.util.Locale;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import org.apache.hc.client5.http.DnsResolver;
+import org.springframework.stereotype.Component;
 
+@Component
 final class ProviderEndpointPolicy {
+  private static final Duration DNS_TIMEOUT = Duration.ofSeconds(3);
+
   interface Resolver {
     InetAddress[] resolve(String host) throws Exception;
   }
 
   private final Resolver resolver;
+  private final ExecutorService dnsExecutor;
 
   ProviderEndpointPolicy() {
-    this(InetAddress::getAllByName);
+    dnsExecutor = new ThreadPoolExecutor(2, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(16), runnable -> {
+      var thread = new Thread(runnable, "provider-dns");
+      thread.setDaemon(true);
+      return thread;
+    }, new ThreadPoolExecutor.AbortPolicy());
+    resolver = host -> timedResolve(host, dnsExecutor);
   }
 
   ProviderEndpointPolicy(Resolver resolver) {
     this.resolver = resolver;
+    this.dnsExecutor = null;
   }
 
   URI modelsEndpoint(String baseUrl) {
+    var endpoint = modelsEndpointForConnection(baseUrl);
+    try {
+      resolvePublic(endpoint.getHost());
+    } catch (UnknownHostException exception) {
+      throw new IllegalArgumentException(exception.getMessage());
+    }
+    return endpoint;
+  }
+
+  URI modelsEndpointForConnection(String baseUrl) {
     final URI base;
     try {
       base = URI.create(baseUrl == null ? "" : baseUrl.trim());
@@ -34,7 +66,6 @@ final class ProviderEndpointPolicy {
       throw new IllegalArgumentException("provider baseUrl contains unsupported components");
     }
     String host = IDN.toASCII(base.getHost()).toLowerCase(Locale.ROOT);
-    validateResolution(host);
     String path = base.getPath() == null ? "" : base.getPath();
     while (path.endsWith("/")) path = path.substring(0, path.length() - 1);
     if (!path.endsWith("/models")) path += "/models";
@@ -45,19 +76,62 @@ final class ProviderEndpointPolicy {
     }
   }
 
-  private void validateResolution(String host) {
+  DnsResolver connectionResolver() {
+    return new DnsResolver() {
+      @Override
+      public InetAddress[] resolve(String host) throws UnknownHostException {
+        return resolvePublic(host);
+      }
+
+      @Override
+      public String resolveCanonicalHostname(String host) {
+        return host;
+      }
+    };
+  }
+
+  InetAddress[] resolvePublic(String host) throws UnknownHostException {
     final InetAddress[] addresses;
     try {
       addresses = resolver.resolve(host);
     } catch (Exception exception) {
-      throw new IllegalArgumentException("provider host cannot be resolved");
+      var failure = new UnknownHostException("provider host cannot be resolved");
+      failure.initCause(exception);
+      throw failure;
     }
-    if (addresses.length == 0) throw new IllegalArgumentException("provider host cannot be resolved");
+    if (addresses.length == 0) throw new UnknownHostException("provider host cannot be resolved");
     for (var address : addresses) {
       if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
           || address.isSiteLocalAddress() || address.isMulticastAddress() || isReserved(address.getAddress())) {
-        throw new IllegalArgumentException("provider host resolves to a private address");
+        throw new UnknownHostException("provider host resolves to a private or reserved address");
       }
+    }
+    return addresses.clone();
+  }
+
+  @PreDestroy
+  void close() {
+    if (dnsExecutor != null) dnsExecutor.shutdownNow();
+  }
+
+  private static InetAddress[] timedResolve(String host, ExecutorService executor) throws Exception {
+    final Future<InetAddress[]> future;
+    try {
+      future = executor.submit(() -> InetAddress.getAllByName(host));
+    } catch (RuntimeException exception) {
+      throw new UnknownHostException("provider DNS capacity is exhausted");
+    }
+    try {
+      return future.get(DNS_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (TimeoutException exception) {
+      future.cancel(true);
+      throw new UnknownHostException("provider DNS lookup timed out");
+    } catch (ExecutionException exception) {
+      if (exception.getCause() instanceof Exception cause) throw cause;
+      throw exception;
+    } catch (InterruptedException exception) {
+      Thread.currentThread().interrupt();
+      throw new UnknownHostException("provider DNS lookup interrupted");
     }
   }
 
@@ -80,6 +154,9 @@ final class ProviderEndpointPolicy {
       int second = bytes[1] & 0xff;
       if ((first & 0xfe) == 0xfc || (first == 0xfe && (second & 0xc0) == 0x80) || first == 0xff) return true;
       if (first == 0x20 && second == 0x01 && (bytes[2] & 0xff) == 0x0d && (bytes[3] & 0xff) == 0xb8) return true;
+      if (first == 0x20 && second == 0x02) return true;
+      if (first == 0x20 && second == 0x01 && bytes[2] == 0 && bytes[3] == 0) return true;
+      if (first == 0x00 && second == 0x64 && (bytes[2] & 0xff) == 0xff && (bytes[3] & 0xff) == 0x9b) return true;
       boolean mapped = true;
       for (int index = 0; index < 10; index++) mapped &= bytes[index] == 0;
       mapped &= (bytes[10] & 0xff) == 0xff && (bytes[11] & 0xff) == 0xff;

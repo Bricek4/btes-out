@@ -20,7 +20,7 @@ import studio.agent.platform.storage.ObjectStoreService;
 @Service
 class ArtifactService {
   static final long MAX_PREVIEW_BYTES = 10L * 1024 * 1024;
-  static final long MAX_REPLACEMENT_BYTES = 20L * 1024 * 1024;
+  static final long MAX_REPLACEMENT_BYTES = 20_000_000L;
   static final long MAX_EXPORT_BYTES = 100L * 1024 * 1024;
   private static final int MAX_EXPORT_FILES = 500;
 
@@ -39,21 +39,40 @@ class ArtifactService {
           FROM artifacts a
           JOIN artifact_versions v ON v.artifact_id=a.id AND v.ordinal=a.current_version
          WHERE a.task_id=:task AND a.current_version>0
-         ORDER BY a.name,a.created_at DESC
+         ORDER BY a.name,a.created_at DESC,a.id DESC
         """).param("task", taskId).query((rs, row) -> new ArtifactTreeBuilder.Entry(
         rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getInt(4),
         rs.getString(5), rs.getLong(6), rs.getString(7))).list();
     return ArtifactTreeBuilder.build(entries);
   }
 
-  ArtifactDetail detail(CurrentUser user, UUID artifactId) {
+  ArtifactDetail detail(CurrentUser user, UUID artifactId, Integer beforeVersion, int limit) {
     var artifact = readable(user, artifactId);
-    var versions = jdbc.sql("""
+    if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be between 1 and 100");
+    if (beforeVersion != null && beforeVersion < 1) throw new IllegalArgumentException("beforeVersion must be positive");
+    String cursor = beforeVersion == null ? "" : "AND ordinal<:before";
+    var query = jdbc.sql("""
+        SELECT ordinal,media_type,size_bytes,sha256,created_at
+          FROM artifact_versions WHERE artifact_id=:id %s ORDER BY ordinal DESC LIMIT :limit
+        """.formatted(cursor)).param("id", artifactId).param("limit", limit + 1);
+    if (beforeVersion != null) query = query.param("before", beforeVersion);
+    var fetched = query.query((rs, row) -> new VersionSummary(rs.getInt(1), rs.getString(2), rs.getLong(3),
+        rs.getString(4), rs.getObject(5, OffsetDateTime.class))).list();
+    boolean hasMore = fetched.size() > limit;
+    var versions = hasMore ? List.copyOf(fetched.subList(0, limit)) : fetched;
+    Integer nextBeforeVersion = hasMore ? versions.getLast().version() : null;
+    return new ArtifactDetail(artifact.id(), artifact.taskId(), artifact.name(), artifact.kind(), artifact.currentVersion(),
+        artifact.currentVersion(), nextBeforeVersion, versions);
+  }
+
+  VersionView versionDetail(CurrentUser user, UUID artifactId, int version) {
+    readable(user, artifactId);
+    return jdbc.sql("""
         SELECT ordinal,media_type,size_bytes,sha256,manifest::text,verification_report::text,created_at
-          FROM artifact_versions WHERE artifact_id=:id ORDER BY ordinal DESC
-        """).param("id", artifactId).query((rs, row) -> new VersionView(rs.getInt(1), rs.getString(2), rs.getLong(3),
-        rs.getString(4), rs.getString(5), rs.getString(6), rs.getObject(7, OffsetDateTime.class))).list();
-    return new ArtifactDetail(artifact.id(), artifact.taskId(), artifact.name(), artifact.kind(), artifact.currentVersion(), versions);
+          FROM artifact_versions WHERE artifact_id=:id AND ordinal=:version
+        """).param("id", artifactId).param("version", version).query((rs, row) -> new VersionView(
+        rs.getInt(1), rs.getString(2), rs.getLong(3), rs.getString(4), rs.getString(5), rs.getString(6),
+        rs.getObject(7, OffsetDateTime.class))).optional().orElseThrow(() -> notFound("ARTIFACT_VERSION_NOT_FOUND"));
   }
 
   StoredVersion readableVersion(CurrentUser user, UUID artifactId, Integer version) {
@@ -79,31 +98,47 @@ class ArtifactService {
   ExportPlan exportPlan(CurrentUser user, UUID taskId) {
     requireTaskRead(user, taskId);
     var versions = jdbc.sql("""
-        SELECT DISTINCT ON(a.name) a.name,v.object_key,v.size_bytes
+        SELECT DISTINCT ON(a.name) a.id,a.name,v.object_key,v.size_bytes
           FROM artifacts a JOIN artifact_versions v ON v.artifact_id=a.id AND v.ordinal=a.current_version
          WHERE a.task_id=:task AND a.current_version>0
-         ORDER BY a.name,a.created_at DESC LIMIT :limit
+         ORDER BY a.name,a.created_at DESC,a.id DESC LIMIT :limit
         """).param("task", taskId).param("limit", MAX_EXPORT_FILES + 1).query((rs, row) ->
-        new ExportVersion(rs.getString(1), rs.getString(2), rs.getLong(3))).list();
+        new ExportVersion(rs.getObject(1, UUID.class), rs.getString(2), null, rs.getString(3), rs.getLong(4))).list();
     if (versions.size() > MAX_EXPORT_FILES) throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "ARTIFACT_EXPORT_TOO_MANY_FILES");
     long total = 0;
-    for (var version : versions) {
+    var normalized = versions.stream().map(version -> new ExportVersion(version.artifactId(), version.name(),
+        ArtifactZip.safeName(version.name()), version.objectKey(), version.sizeBytes())).toList();
+    var folderPaths = new java.util.HashSet<String>();
+    for (var version : normalized) {
+      var parts = version.safeName().split("/", -1);
+      var prefix = new StringBuilder();
+      for (int index = 0; index < parts.length - 1; index++) {
+        if (!prefix.isEmpty()) prefix.append('/');
+        prefix.append(parts[index]);
+        folderPaths.add(prefix.toString());
+      }
+    }
+    var used = new java.util.HashSet<String>();
+    var safeVersions = new java.util.ArrayList<ExportVersion>();
+    for (var version : normalized) {
       try {
         total = Math.addExact(total, version.sizeBytes());
       } catch (ArithmeticException exception) {
         throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "ARTIFACT_EXPORT_TOO_LARGE");
       }
       if (total > MAX_EXPORT_BYTES) throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "ARTIFACT_EXPORT_TOO_LARGE");
-      ArtifactZip.safeName(version.name());
+      safeVersions.add(new ExportVersion(version.artifactId(), version.name(),
+          ArtifactZip.uniqueName(version.safeName(), version.artifactId(), folderPaths, used),
+          version.objectKey(), version.sizeBytes()));
     }
-    return new ExportPlan(List.copyOf(versions), total);
+    return new ExportPlan(List.copyOf(safeVersions), total);
   }
 
   void writeExport(ExportPlan plan, OutputStream output) {
     try {
       var zip = new ZipOutputStream(output);
       for (var version : plan.versions()) {
-        zip.putNextEntry(new ZipEntry(ArtifactZip.safeName(version.name())));
+        zip.putNextEntry(new ZipEntry(version.safeName()));
         long copied = objects.copyTo(version.objectKey(), version.sizeBytes(), zip);
         if (copied != version.sizeBytes()) throw new IllegalStateException("stored artifact size changed during export");
         zip.closeEntry();
@@ -169,12 +204,14 @@ class ArtifactService {
   private ArtifactRow readable(CurrentUser user, UUID artifactId) {
     return jdbc.sql("""
         SELECT a.id,a.task_id,a.name,a.kind,a.current_version
-          FROM artifacts a JOIN tasks t ON t.id=a.task_id
-         WHERE a.id=:id AND t.deleted_at IS NULL AND (
+          FROM artifacts a JOIN tasks t ON t.id=a.task_id JOIN projects p ON p.id=t.project_id
+          JOIN users owner_user ON owner_user.id=t.owner_id
+         WHERE a.id=:id AND t.deleted_at IS NULL AND p.organization_id=:org AND p.owner_id=t.owner_id
+           AND owner_user.organization_id=:org AND owner_user.disabled_at IS NULL AND (
                t.owner_id=:user
-            OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.resource_type='PROJECT' AND s.resource_id=t.project_id)
-            OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.resource_type='ARTIFACT' AND s.resource_id=a.id))
-        """).param("id", artifactId).param("user", user.id()).query((rs, row) -> new ArtifactRow(
+            OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.owner_id=t.owner_id AND s.resource_type='PROJECT' AND s.resource_id=t.project_id)
+            OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.owner_id=t.owner_id AND s.resource_type='ARTIFACT' AND s.resource_id=a.id))
+        """).param("id", artifactId).param("user", user.id()).param("org", user.organizationId()).query((rs, row) -> new ArtifactRow(
         rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getInt(5))).optional()
         .orElseThrow(() -> notFound("ARTIFACT_NOT_FOUND"));
   }
@@ -182,18 +219,22 @@ class ArtifactService {
   private ArtifactRow ownedForUpdate(CurrentUser user, UUID artifactId) {
     return jdbc.sql("""
         SELECT a.id,a.task_id,a.name,a.kind,a.current_version
-          FROM artifacts a JOIN tasks t ON t.id=a.task_id
-         WHERE a.id=:id AND t.owner_id=:owner AND t.deleted_at IS NULL FOR UPDATE OF a
-        """).param("id", artifactId).param("owner", user.id()).query((rs, row) -> new ArtifactRow(
+          FROM artifacts a JOIN tasks t ON t.id=a.task_id JOIN projects p ON p.id=t.project_id
+         WHERE a.id=:id AND t.owner_id=:owner AND p.owner_id=:owner AND p.organization_id=:org
+           AND t.deleted_at IS NULL FOR UPDATE OF a
+        """).param("id", artifactId).param("owner", user.id()).param("org", user.organizationId()).query((rs, row) -> new ArtifactRow(
         rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getInt(5))).optional()
         .orElseThrow(() -> notFound("ARTIFACT_NOT_FOUND"));
   }
 
   private void requireTaskRead(CurrentUser user, UUID taskId) {
     boolean allowed = jdbc.sql("""
-        SELECT EXISTS(SELECT 1 FROM tasks t WHERE t.id=:task AND t.deleted_at IS NULL AND (
-          t.owner_id=:user OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.resource_type='PROJECT' AND s.resource_id=t.project_id)))
-        """).param("task", taskId).param("user", user.id()).query(Boolean.class).single();
+        SELECT EXISTS(SELECT 1 FROM tasks t JOIN projects p ON p.id=t.project_id JOIN users owner_user ON owner_user.id=t.owner_id
+          WHERE t.id=:task AND t.deleted_at IS NULL AND p.organization_id=:org AND p.owner_id=t.owner_id
+            AND owner_user.organization_id=:org AND owner_user.disabled_at IS NULL AND (
+              t.owner_id=:user OR EXISTS(SELECT 1 FROM shares s WHERE s.member_id=:user AND s.owner_id=t.owner_id
+                AND s.resource_type='PROJECT' AND s.resource_id=t.project_id)))
+        """).param("task", taskId).param("user", user.id()).param("org", user.organizationId()).query(Boolean.class).single();
     if (!allowed) throw notFound("TASK_NOT_FOUND");
   }
 
@@ -217,12 +258,14 @@ class ArtifactService {
     return new ResponseStatusException(HttpStatus.NOT_FOUND, code);
   }
 
-  record ArtifactDetail(UUID artifactId, UUID taskId, String name, String kind, int currentVersion, List<VersionView> versions) { }
+  record ArtifactDetail(UUID artifactId, UUID taskId, String name, String kind, int currentVersion, int totalVersions,
+                        Integer nextBeforeVersion, List<VersionSummary> versions) { }
+  record VersionSummary(int version, String mediaType, long sizeBytes, String sha256, OffsetDateTime createdAt) { }
   record VersionView(int version, String mediaType, long sizeBytes, String sha256, String manifest,
                      String verificationReport, OffsetDateTime createdAt) { }
   record StoredVersion(String name, int version, String objectKey, String mediaType, long sizeBytes, String sha256) { }
   record Preview(StoredVersion version, byte[] content) { }
   private record ArtifactRow(UUID id, UUID taskId, String name, String kind, int currentVersion) { }
   record ExportPlan(List<ExportVersion> versions, long totalBytes) { }
-  record ExportVersion(String name, String objectKey, long sizeBytes) { }
+  record ExportVersion(UUID artifactId, String name, String safeName, String objectKey, long sizeBytes) { }
 }

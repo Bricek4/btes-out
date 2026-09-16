@@ -4,10 +4,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-final class ArtifactZip {
+public final class ArtifactZip {
   private ArtifactZip() { }
 
   static byte[] create(Map<String, byte[]> files, long maxUncompressedBytes) {
@@ -31,16 +33,33 @@ final class ArtifactZip {
     }
   }
 
-  static String safeName(String name) {
+  public static String safeName(String name) {
     if (name == null || name.isBlank() || name.startsWith("/") || name.indexOf('\\') >= 0) {
       throw new IllegalArgumentException("invalid artifact path");
     }
+    var safe = new java.util.ArrayList<String>();
     for (var segment : name.split("/", -1)) {
-      if (segment.isBlank() || ".".equals(segment) || "..".equals(segment)
-          || segment.chars().anyMatch(Character::isISOControl)) {
-        throw new IllegalArgumentException("invalid artifact path");
-      }
+      if (segment.isEmpty() || ".".equals(segment)) continue;
+      if ("..".equals(segment)) throw new IllegalArgumentException("invalid artifact path");
+      var normalized = new StringBuilder(segment.length());
+      segment.codePoints().forEach(codePoint -> normalized.appendCodePoint(Character.isISOControl(codePoint) ? '_' : codePoint));
+      if (!normalized.toString().isBlank()) safe.add(normalized.toString());
     }
-    return name;
+    if (safe.isEmpty()) throw new IllegalArgumentException("invalid artifact path");
+    return String.join("/", safe);
+  }
+
+  static String uniqueName(String normalized, UUID artifactId, Set<String> reserved, Set<String> used) {
+    String candidate = normalized;
+    if (reserved.contains(candidate) || used.contains(candidate)) {
+      int slash = candidate.lastIndexOf('/');
+      String parent = slash < 0 ? "" : candidate.substring(0, slash + 1);
+      String filename = slash < 0 ? candidate : candidate.substring(slash + 1);
+      candidate = parent + filename + "~" + artifactId.toString().substring(0, 8);
+    }
+    if (reserved.contains(candidate) || !used.add(candidate)) {
+      throw new IllegalArgumentException("artifact paths cannot be disambiguated");
+    }
+    return candidate;
   }
 }

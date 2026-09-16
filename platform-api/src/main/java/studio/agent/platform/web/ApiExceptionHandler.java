@@ -9,6 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 class ApiExceptionHandler {
@@ -26,5 +27,8 @@ class ApiExceptionHandler {
   }
   @ExceptionHandler(DuplicateKeyException.class) ResponseEntity<Map<String,Object>> conflict(Exception e) {
     return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("code", "CONFLICT"));
+  }
+  @ExceptionHandler(MaxUploadSizeExceededException.class) ResponseEntity<Map<String,Object>> uploadTooLarge(Exception e) {
+    return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(Map.of("code", "UPLOAD_TOO_LARGE"));
   }
 }
