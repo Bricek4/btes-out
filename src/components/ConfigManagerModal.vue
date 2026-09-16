@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { Blocks, Check, KeyRound, LoaderCircle, Sparkles, X } from '../lib/icons'
 import { api, ApiError } from '../lib/api'
+import TemplateVisualEditor from './TemplateVisualEditor.vue'
 import type { LoginLocator, LoginProfile, Provider, Template } from '../types'
 
 type Mode = 'templates' | 'providers' | 'profiles'
@@ -21,18 +22,18 @@ const emit = defineEmits<{
 
 const busy = ref(false)
 const error = ref('')
+const visualEditor = ref<InstanceType<typeof TemplateVisualEditor> | null>(null)
+const editorLoading = ref(false)
+const skillChoices = computed(() => Array.from(new Map(props.templates.map((item) => [item.skillId, { id: item.skillId, name: item.name }])).values()))
 const templateAction = ref<'create' | 'version'>(props.selectedTemplateId ? 'version' : 'create')
 const providerAction = ref<'create' | 'edit' | 'model'>(props.selectedProviderId ? 'edit' : 'create')
 const initialProvider = props.providers.find((item) => item.id === props.selectedProviderId)
 const discoveredModels = ref<Array<{ modelId: string; displayName: string }>>([])
 const template = reactive({
   id: props.selectedTemplateId ?? '',
-  name: '',
-  skillId: '',
+  name: '项目维护文档',
+  skillId: props.templates[0]?.skillId ?? '',
   publicTemplate: false,
-  outputFormat: 'MARKDOWN' as 'MARKDOWN' | 'HTML',
-  content: '# {{title}}\n',
-  css: '',
 })
 const provider = reactive({
   id: props.selectedProviderId ?? '',
@@ -106,6 +107,8 @@ function locator(kind: LoginLocator['kind'], name: string, role?: string): Login
 }
 
 async function saveTemplate() {
+  if (!visualEditor.value) throw new ApiError('编辑器尚未就绪', 400)
+  const input = visualEditor.value.buildVersion()
   let templateId = template.id
   let createdName = ''
   if (templateAction.value === 'create') {
@@ -116,16 +119,7 @@ async function saveTemplate() {
   if (!templateId) throw new ApiError('请选择要创建新版本的模板', 400)
   let version
   try {
-    version = await api.createTemplateVersion(templateId, {
-      outputFormat: template.outputFormat,
-      parameterSchema: {},
-      formLayout: {},
-      allowedSections: [],
-      markdownTemplate: template.outputFormat === 'MARKDOWN' ? template.content : null,
-      htmlTemplate: template.outputFormat === 'HTML' ? template.content : null,
-      css: template.outputFormat === 'HTML' ? template.css : null,
-      validationRules: {},
-    })
+    version = await api.createTemplateVersion(templateId, input)
   } catch (reason) {
     if (createdName) throw new ApiError(`模板“${createdName}”已创建，但版本保存失败；请从模板卡片重试新版本`, 409)
     throw reason
@@ -224,7 +218,7 @@ async function save() {
 
 <template>
   <div class="modal-layer" @click.self="emit('close')">
-    <section class="modal-card config-modal" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
+    <section class="modal-card config-modal" :class="{'config-modal--editor': mode === 'templates'}" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
       <div class="modal-card__head">
         <div class="config-modal__title"><span class="config-modal__icon"><Blocks v-if="mode === 'templates'" :size="18" /><Sparkles v-else-if="mode === 'providers'" :size="18" /><KeyRound v-else :size="18" /></span><div><span class="section-head__eyebrow">CONFIGURATION</span><h2 id="config-modal-title">{{ title }}</h2><p>{{ subtitle }}</p></div></div>
         <button class="icon-button" type="button" aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
@@ -238,17 +232,12 @@ async function save() {
           <button type="button" :class="{ active: templateAction === 'version' }" :disabled="!templates.length" @click="templateAction = 'version'">创建新版本</button>
         </div>
         <template v-if="templateAction === 'create'">
-          <label class="field-label">模板名称<input v-model="template.name" required placeholder="项目维护文档" /></label>
-          <label class="field-label">Skill ID<input v-model="template.skillId" required placeholder="关联的 Skill UUID" /></label>
+          <div class="form-grid"><label class="field-label">模板名称<input v-model="template.name" required maxlength="120" placeholder="项目维护文档" /></label><label class="field-label">关联能力<select v-if="skillChoices.length" v-model="template.skillId" required><option v-for="item in skillChoices" :key="item.id" :value="item.id">{{item.name}}</option></select><input v-else v-model="template.skillId" required placeholder="工作区尚无能力，请先初始化模板" /></label></div>
           <label class="check-field"><input v-model="template.publicTemplate" type="checkbox" />设为组织公共模板（仅管理员）</label>
         </template>
         <label v-else class="field-label">目标模板<select v-model="template.id" required><option value="" disabled>选择模板</option><option v-for="item in templates" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-        <div class="form-grid">
-          <label class="field-label">输出格式<select v-model="template.outputFormat"><option value="MARKDOWN">Markdown</option><option value="HTML">HTML</option></select></label>
-        </div>
-        <label class="field-label">模板正文<textarea v-model="template.content" required :placeholder="template.outputFormat === 'HTML' ? '<main>{{title}}</main>' : '# {{title}}'" /></label>
-        <label v-if="template.outputFormat === 'HTML'" class="field-label">CSS<textarea v-model="template.css" placeholder="main { max-width: 960px; }" /></label>
-        <button class="button button--primary button--wide" type="submit" :disabled="busy"><LoaderCircle v-if="busy" class="spin" :size="16" /><Check v-else :size="16" />保存不可变版本</button>
+        <TemplateVisualEditor ref="visualEditor" :template-id="templateAction === 'version' ? template.id : undefined" @loading="editorLoading = $event" />
+        <button class="button button--primary button--wide" type="submit" :disabled="busy || editorLoading"><LoaderCircle v-if="busy" class="spin" :size="16" /><Check v-else :size="16" />保存模板版本</button>
       </form>
 
       <form v-else-if="mode === 'providers'" class="config-form" @submit.prevent="save">
