@@ -1,0 +1,26 @@
+# Build outputs
+**/target/
+**/dist/
+**/node_modules/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# Local app data
+workspaces/
+artifacts/
+logs/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Internal planning scratch
+.superpowers/
