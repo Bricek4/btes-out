@@ -1,0 +1,3 @@
+package studio.agent.platform.task;
+import static org.junit.jupiter.api.Assertions.*; import java.time.OffsetDateTime; import java.util.List; import org.junit.jupiter.api.Test;
+class ApprovalRulesTest { @Test void requires_running_and_valid_decisions(){var now=OffsetDateTime.now();assertThrows(IllegalStateException.class,()->ApprovalRules.request("QUEUED","TEXT","x",List.of(),null,now));assertThrows(IllegalArgumentException.class,()->ApprovalRules.decide("CHOICE",List.of("yes"),"no",null,null,now));assertThrows(IllegalArgumentException.class,()->ApprovalRules.decide("TEXT",List.of(),null," ",null,now));} }
