@@ -12,7 +12,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-} from 'lucide-vue-next'
+} from '../lib/icons'
 
 defineProps<{ active: string; collapsed: boolean }>()
 const emit = defineEmits<{ select: [value: string]; toggle: [] }>()
@@ -46,7 +46,7 @@ const library = [
     <div v-if="!collapsed" class="sidebar__eyebrow">WORKSPACE</div>
     <nav class="sidebar__nav" aria-label="主导航">
       <button v-for="item in primary" :key="item.id" class="nav-item" :class="{ 'nav-item--active': active === item.id }" type="button" @click="emit('select', item.id)">
-        <component :is="item.icon" :size="18" :stroke-width="active === item.id ? 2.4 : 1.9" />
+        <component :is="item.icon" class="nav-item__icon" :size="18" :stroke-width="active === item.id ? 2 : 1.8" />
         <span v-if="!collapsed">{{ item.label }}</span>
         <ChevronRight v-if="!collapsed && active === item.id" class="nav-item__chevron" :size="14" />
       </button>
@@ -55,7 +55,7 @@ const library = [
     <div v-if="!collapsed" class="sidebar__eyebrow sidebar__eyebrow--library">LIBRARY</div>
     <nav class="sidebar__nav" aria-label="资源管理">
       <button v-for="item in library" :key="item.id" class="nav-item" :class="{ 'nav-item--active': active === item.id }" type="button" @click="emit('select', item.id)">
-        <component :is="item.icon" :size="18" :stroke-width="active === item.id ? 2.4 : 1.9" />
+        <component :is="item.icon" class="nav-item__icon" :size="18" :stroke-width="active === item.id ? 2 : 1.8" />
         <span v-if="!collapsed">{{ item.label }}</span>
       </button>
     </nav>
@@ -63,10 +63,10 @@ const library = [
     <div class="sidebar__spacer" />
     <nav class="sidebar__nav" aria-label="系统导航">
       <button class="nav-item" :class="{ 'nav-item--active': active === 'security' }" type="button" @click="emit('select', 'security')">
-        <ShieldCheck :size="18" /><span v-if="!collapsed">权限与审计</span>
+        <ShieldCheck class="nav-item__icon" :size="18" :stroke-width="active === 'security' ? 2 : 1.8" /><span v-if="!collapsed">权限与审计</span>
       </button>
       <button class="nav-item" :class="{ 'nav-item--active': active === 'settings' }" type="button" @click="emit('select', 'settings')">
-        <Settings2 :size="18" /><span v-if="!collapsed">工作区设置</span>
+        <Settings2 class="nav-item__icon" :size="18" :stroke-width="active === 'settings' ? 2 : 1.8" /><span v-if="!collapsed">工作区设置</span>
       </button>
     </nav>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Check, LoaderCircle, X } from 'lucide-vue-next'
+import { Blocks, Check, KeyRound, LoaderCircle, Sparkles, X } from '../lib/icons'
 import { api, ApiError } from '../lib/api'
 import type { LoginLocator, LoginProfile, Provider, Template } from '../types'
 
@@ -226,7 +226,7 @@ async function save() {
   <div class="modal-layer" @click.self="emit('close')">
     <section class="modal-card config-modal" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
       <div class="modal-card__head">
-        <div><span class="section-head__eyebrow">CONFIGURATION</span><h2 id="config-modal-title">{{ title }}</h2><p>{{ subtitle }}</p></div>
+        <div class="config-modal__title"><span class="config-modal__icon"><Blocks v-if="mode === 'templates'" :size="18" /><Sparkles v-else-if="mode === 'providers'" :size="18" /><KeyRound v-else :size="18" /></span><div><span class="section-head__eyebrow">CONFIGURATION</span><h2 id="config-modal-title">{{ title }}</h2><p>{{ subtitle }}</p></div></div>
         <button class="icon-button" type="button" aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
       </div>
 

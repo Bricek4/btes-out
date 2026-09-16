@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowUpRight, Clock3 } from 'lucide-vue-next'
+import { Activity, ArrowUpRight, Ban, BookOpenCheck, CircleAlert, CircleCheck, CircleX, Clock3, Code2, FileText, LoaderCircle, Pause, Queue, ScanLine } from '../lib/icons'
 import type { Task, TaskStatus } from '../types'
 
 defineProps<{ tasks: Task[] }>()
@@ -23,12 +23,12 @@ function relative(value: string) {
       <thead><tr><th>任务</th><th>状态</th><th>更新时间</th><th class="task-table__actions" /></tr></thead>
       <tbody>
         <tr v-for="task in tasks" :key="task.taskId" class="task-row" tabindex="0" :aria-label="`打开${typeLabels[task.type]}任务`" @click="emit('open', task)" @keydown.enter="emit('open', task)" @keydown.space.prevent="emit('open', task)">
-          <td><div class="task-name"><div class="task-type-dot" :class="`task-type-dot--${task.type.toLowerCase()}`" /><div><strong>{{ typeLabels[task.type] }}</strong><span>{{ task.taskId.slice(0, 8) }} · {{ task.projectId.slice(0, 8) }}</span></div></div></td>
-          <td><span class="status-pill" :class="`status-pill--${task.status.toLowerCase()}`"><span class="status-pill__dot" />{{ labels[task.status] }}</span></td>
+          <td><div class="task-name"><span class="task-type-icon" :class="`task-type-icon--${task.type.toLowerCase()}`"><FileText v-if="task.type === 'PROJECT_DOCS'" :size="15" /><BookOpenCheck v-else-if="task.type === 'USER_GUIDE'" :size="15" /><Code2 v-else-if="task.type === 'HTML'" :size="15" /><ScanLine v-else :size="15" /></span><div><strong>{{ typeLabels[task.type] }}</strong><span>{{ task.taskId.slice(0, 8) }} · {{ task.projectId.slice(0, 8) }}</span></div></div></td>
+          <td><span class="status-pill" :class="`status-pill--${task.status.toLowerCase()}`"><Queue v-if="task.status === 'QUEUED'" :size="12" /><LoaderCircle v-else-if="task.status === 'RUNNING'" class="spin" :size="12" /><Pause v-else-if="task.status === 'PAUSED'" :size="12" /><CircleAlert v-else-if="task.status === 'WAITING_FOR_APPROVAL'" :size="12" /><CircleCheck v-else-if="task.status === 'SUCCEEDED'" :size="12" /><CircleX v-else-if="task.status === 'FAILED'" :size="12" /><Ban v-else :size="12" />{{ labels[task.status] }}</span></td>
           <td><span class="task-time"><Clock3 :size="14" />{{ relative(task.updatedAt) }}</span></td>
           <td class="task-table__actions"><button class="icon-button" type="button" aria-label="打开任务详情" @click.stop="emit('open', task)"><ArrowUpRight :size="16" /></button></td>
         </tr>
-        <tr v-if="tasks.length === 0"><td colspan="4"><div class="table-empty"><div class="table-empty__icon"><Clock3 :size="20" /></div><strong>还没有任务</strong><span>从右上角发起一个工作流，结果会显示在这里</span></div></td></tr>
+        <tr v-if="tasks.length === 0"><td colspan="4"><div class="table-empty"><div class="table-empty__icon"><Activity :size="20" /></div><strong>还没有任务</strong><span>从右上角发起一个工作流，结果会显示在这里</span></div></td></tr>
       </tbody>
     </table>
   </div>
