@@ -19,7 +19,8 @@ public class InternalWorkerController {
   private final JdbcClient jdbc; private final WorkerTokenGuard tokens; private final SecretBox secrets; private final ObjectStoreService objects; private final ArtifactReservationService artifacts;
   public InternalWorkerController(JdbcClient jdbc,WorkerTokenGuard tokens,SecretBox secrets,ObjectStoreService objects,ArtifactReservationService artifacts){this.jdbc=jdbc;this.tokens=tokens;this.secrets=secrets;this.objects=objects;this.artifacts=artifacts;}
   @GetMapping("/worker-context/agent/{taskId}") ResponseEntity<Map<String,Object>> agent(@PathVariable UUID taskId){var row=task(taskId);var profiles=jdbc.sql("SELECT id,reference,name FROM login_profiles WHERE owner_id=:owner ORDER BY reference").param("owner",row.owner()).query((rs,n)->Map.<String,Object>of("id",rs.getObject(1,UUID.class),"reference",rs.getString(2),"name",rs.getString(3))).list();return noStore(Map.of("taskId",taskId,"baseUrl",row.baseUrl(),"sourceUrl",objects.presignGet(row.sourceKey(),Duration.ofMinutes(10)).toString(),"template",Map.of("id",row.templateId(),"format",row.format(),"markdown",nullToEmpty(row.markdown()),"html",nullToEmpty(row.html()),"css",nullToEmpty(row.css()),"schema",row.schema()),"parameters",row.parameters(),"providerProfileId",row.providerId(),"modelId",row.modelId(),"loginProfiles",profiles));}
-  record StatusUpdate(String status,Integer progress,String message,String details) {}
+  record StatusUpdate(String status,Integer progress,String message,String details,
+      String resultReference,String failureCode) {}
   @PostMapping("/tasks/{taskId}/events")
   @org.springframework.transaction.annotation.Transactional
   ResponseEntity<Void> event(@RequestHeader("Authorization") String auth, @PathVariable UUID taskId,
@@ -32,6 +33,21 @@ public class InternalWorkerController {
     if (update.progress() != null && (update.progress() < 0 || update.progress() > 100)) {
       throw new IllegalArgumentException("progress must be between 0 and 100");
     }
+    String resultReference = cleanReference(update.resultReference());
+    String failureCode = cleanFailureCode(update.failureCode());
+    if (requested == studio.agent.contracts.TaskStatus.SUCCEEDED
+        && (resultReference == null || failureCode != null)) {
+      throw new IllegalArgumentException("successful status requires an artifact reference");
+    }
+    if (requested == studio.agent.contracts.TaskStatus.FAILED
+        && (failureCode == null || resultReference != null)) {
+      throw new IllegalArgumentException("failed status requires a failure code");
+    }
+    if (requested != studio.agent.contracts.TaskStatus.SUCCEEDED
+        && requested != studio.agent.contracts.TaskStatus.FAILED
+        && (resultReference != null || failureCode != null)) {
+      throw new IllegalArgumentException("terminal details are only valid for terminal statuses");
+    }
     String currentValue = jdbc.sql("SELECT status FROM tasks WHERE id=:id AND deleted_at IS NULL FOR UPDATE")
         .param("id", taskId).query(String.class).optional()
         .orElseThrow(() -> new IllegalArgumentException("task not found"));
@@ -40,11 +56,15 @@ public class InternalWorkerController {
     var now = java.time.OffsetDateTime.now();
     jdbc.sql("UPDATE tasks SET status=:status,updated_at=:now WHERE id=:id")
         .param("status", requested.name()).param("now", now).param("id", taskId).update();
+    if (resultReference != null || failureCode != null || requested == studio.agent.contracts.TaskStatus.CANCELED) {
+      jdbc.sql("UPDATE tasks SET result_reference=:result,failure_code=:failure,updated_at=:now WHERE id=:id")
+          .param("result", resultReference).param("failure", failureCode).param("now", now).param("id", taskId).update();
+    }
     var sequence = jdbc.sql("SELECT COALESCE(MAX(sequence),0)+1 FROM task_events WHERE task_id=:id")
         .param("id", taskId).query(Long.class).single();
-    jdbc.sql("INSERT INTO task_events(task_id,sequence,status,event_type,progress,message,details,occurred_at) VALUES(:task,:sequence,:status,'WORKER',:progress,:message,CAST(:details AS jsonb),:now)")
+    jdbc.sql("INSERT INTO task_events(task_id,sequence,status,result_reference,failure_code,event_type,progress,message,details,occurred_at) VALUES(:task,:sequence,:status,:result,:failure,'WORKER',:progress,:message,CAST(:details AS jsonb),:now)")
         .param("task", taskId).param("sequence", sequence).param("status", requested.name())
-        .param("progress", update.progress()).param("message", clean(update.message(), 512))
+        .param("result", resultReference).param("failure", failureCode).param("progress", update.progress()).param("message", clean(update.message(), 512))
         .param("details", cleanDetails(update.details())).param("now", now).update();
     return ResponseEntity.noContent().build();
   }
@@ -76,6 +96,8 @@ public class InternalWorkerController {
   private static String nullToEmpty(String v){return v==null?"":v;} private static String origin(String url){try{var u=java.net.URI.create(url);return u.getScheme()+"://"+u.getAuthority();}catch(Exception e){return url;}}
   private static String clean(String value,int limit){if(value==null)return null;var clean=value.replaceAll("[\\r\\n\\t]"," ").replaceAll("(?i)(password|api[_-]?key|token)\\s*[:=]\\s*[^ ]+","[REDACTED]");return clean.length()>limit?clean.substring(0,limit):clean;}
   private static String cleanDetails(String value){return "{}";}
+  private static String cleanReference(String value){if(value==null||value.isBlank())return null;if(value.length()>2048||!value.matches("artifact://[A-Za-z0-9][A-Za-z0-9._/-]*"))throw new IllegalArgumentException("artifact reference is invalid");return value;}
+  private static String cleanFailureCode(String value){if(value==null||value.isBlank())return null;if(!value.matches("[A-Z][A-Z0-9_]{0,127}"))throw new IllegalArgumentException("failure code is invalid");return value;}
   private static Object jsonObject(String value){try{return new tools.jackson.databind.ObjectMapper().readValue(value,Object.class);}catch(tools.jackson.core.JacksonException e){throw new IllegalStateException("stored locator is invalid",e);}}
   private record Task(UUID owner,String sourceKey,UUID templateId,String format,String markdown,String html,String css,String schema,String parameters,UUID providerId,String modelId,String baseUrl){} private record Provider(UUID owner,UUID id,String endpoint,String key,String options,String model){} private record Login(UUID owner,String ref,String url,String path,String userLocator,String passwordLocator,String submitLocator,String username,String password){} private record Reservation(UUID id,String key,String media,long size,String sha){}
 }

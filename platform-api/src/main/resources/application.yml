@@ -16,6 +16,8 @@ agent-studio:
   agent-worker-token: ${AGENT_WORKER_TOKEN:}
   browser-worker-token: ${BROWSER_WORKER_TOKEN:}
   agent-worker-base-url: ${AGENT_WORKER_BASE_URL:http://agent-worker:8082}
+  workflow-service-base-url: ${WORKFLOW_SERVICE_URL:${WORKFLOW_SERVICE_BASE_URL:http://workflow-service:8081}}
+  workflow-service-token: ${WORKFLOW_SERVICE_TOKEN:}
   object-store:
     endpoint: ${S3_ENDPOINT:}
     region: ${S3_REGION:}
@@ -23,3 +25,8 @@ agent-studio:
     access-key: ${S3_ACCESS_KEY:}
     secret-key: ${S3_SECRET_KEY:}
     path-style: ${S3_PATH_STYLE:true}
+  git:
+    allowed-hosts: ${GIT_ALLOWED_HOSTS:github.com,gitlab.com,bitbucket.org}
+    max-archive-bytes: ${GIT_MAX_ARCHIVE_BYTES:104857600}
+    max-files: ${GIT_MAX_FILES:20000}
+    timeout-seconds: ${GIT_TIMEOUT_SECONDS:90}

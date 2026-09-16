@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -29,15 +29,14 @@ services:
     depends_on:
       - minio
     entrypoint: ["/bin/sh", "-ec"]
-    command: >-
-      until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 2; done;
-      mc mb --ignore-existing local/${S3_BUCKET}
+    command:
+      - 'until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done; mc mb --ignore-existing local/${S3_BUCKET}'
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
 
   temporal-postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     environment:
       POSTGRES_DB: temporal
       POSTGRES_USER: temporal
@@ -81,7 +80,7 @@ services:
       BIND_ON_IP: 0.0.0.0
       DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
     volumes:
-      - ./deploy/temporal:/etc/temporal/config:ro
+      - ./deploy/temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "7233"]
       interval: 5s
@@ -116,6 +115,12 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
       BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN}
+      WORKFLOW_SERVICE_URL: http://workflow-service:8081
+      WORKFLOW_SERVICE_TOKEN: ${WORKFLOW_SERVICE_TOKEN}
+      GIT_ALLOWED_HOSTS: ${GIT_ALLOWED_HOSTS}
+      GIT_MAX_ARCHIVE_BYTES: ${GIT_MAX_ARCHIVE_BYTES}
+      GIT_MAX_FILES: ${GIT_MAX_FILES}
+      GIT_TIMEOUT_SECONDS: ${GIT_TIMEOUT_SECONDS}
       AGENT_WORKER_BASE_URL: http://agent-worker:8082
       S3_ENDPOINT: http://minio:9000
       S3_REGION: us-east-1
@@ -170,8 +175,10 @@ services:
       TEMPORAL_TARGET: temporal:7233
       TEMPORAL_NAMESPACE: default
       TEMPORAL_TASK_QUEUE: agent-studio-tasks
+      PLATFORM_API_URL: http://platform-api:8080
       AGENT_WORKER_BASE_URL: http://agent-worker:8082
       AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+      WORKFLOW_SERVICE_TOKEN: ${WORKFLOW_SERVICE_TOKEN}
     depends_on:
       temporal-create-namespace:
         condition: service_completed_successfully
@@ -180,7 +187,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: .
       dockerfile: Dockerfile
     depends_on:
       platform-api:

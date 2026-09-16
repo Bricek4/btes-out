@@ -28,7 +28,7 @@ npm ci --no-audit --no-fund
 npm run build
 ```
 
-The frontend development server proxies `/api` to `http://localhost:8080`. Platform API requires all security-sensitive values from the environment; do not put real credentials in a committed file.
+The frontend development server proxies `/api` to `http://localhost:8080`. Platform API requires all security-sensitive values from the environment; do not put real credentials in a committed file. Remote Git imports accept HTTPS repositories on the configured `GIT_ALLOWED_HOSTS` list (GitHub, GitLab and Bitbucket by default), use a shallow clone, and enforce connection, file-count and archive-size limits. Add the host/container egress firewall required by your deployment before allowing additional hosts.
 
 ## Compose deployment
 
@@ -54,4 +54,4 @@ Only the declared path is executed. Missing route evidence, an unavailable login
 
 ## Repository boundaries
 
-The old application and its archived PostgreSQL/workspaces data are separate from this repository. This project contains no old product branding, fixed legacy manual sections or old requirement documents. Git URL import remains fail-closed until a controlled egress proxy can enforce redirect and DNS policy; ZIP import is available with archive traversal and size limits.
+The old application and its archived PostgreSQL/workspaces data are separate from this repository. This project contains no old product branding, fixed legacy manual sections or old requirement documents. Git URL import validates every JGit HTTP connection and redirect against the configured HTTPS host allowlist and rejects hosts that resolve to private or link-local addresses; ZIP import additionally enforces archive traversal and expanded-size limits. Production should apply an outbound egress firewall or proxy as a second boundary.
