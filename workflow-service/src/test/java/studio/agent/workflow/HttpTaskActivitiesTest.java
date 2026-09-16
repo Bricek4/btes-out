@@ -9,6 +9,8 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import studio.agent.contracts.TaskType;
 import tools.jackson.databind.ObjectMapper;
@@ -32,12 +34,18 @@ class HttpTaskActivitiesTest {
         exchange.close();
       });
       server.start();
+      var reports = new RecordingReporter();
       var activities = new HttpTaskActivities(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
-          "agent-token", HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(), new ObjectMapper());
+          "agent-token", HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
+          new ObjectMapper(), reports);
       var outcome = activities.execute(new WorkflowInput("task-1", "project-1", TaskType.PROJECT_DOCS,
           "source://1", "template://1", "parameters://1", "provider://1", false));
       assertThat(outcome.status()).isEqualTo(studio.agent.contracts.TaskStatus.SUCCEEDED);
       assertThat(seen.toString()).contains("POST|Bearer agent-token|", "sourceReference").doesNotContain("password");
+      assertThat(reports.values).containsExactly(
+          new PlatformStatusUpdate("task-1", studio.agent.contracts.TaskStatus.RUNNING, 0, null, null),
+          new PlatformStatusUpdate("task-1", studio.agent.contracts.TaskStatus.SUCCEEDED, 100,
+              "artifact://task-1", null));
     } finally {
       server.stop(0);
     }
@@ -49,17 +57,22 @@ class HttpTaskActivitiesTest {
     try {
       server.createContext("/internal/tasks/task-2/execute", exchange -> {
         byte[] response = "provider-secret-body".getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(502, response.length);
+        exchange.sendResponseHeaders(403, response.length);
         exchange.getResponseBody().write(response);
         exchange.close();
       });
       server.start();
+      var reports = new RecordingReporter();
       var activities = new HttpTaskActivities(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
-          "agent-token", HttpClient.newHttpClient(), new ObjectMapper());
+          "agent-token", HttpClient.newHttpClient(), new ObjectMapper(), reports);
       assertThatThrownBy(() -> activities.execute(new WorkflowInput("task-2", "project-2", TaskType.HTML,
           "source://2", "template://2", "parameters://2", "provider://2", false)))
           .isInstanceOf(ApplicationFailure.class).hasMessageContaining("AGENT_WORKER_REJECTED")
           .hasMessageNotContaining("provider-secret-body");
+      assertThat(reports.values).containsExactly(
+          new PlatformStatusUpdate("task-2", studio.agent.contracts.TaskStatus.RUNNING, 0, null, null),
+          new PlatformStatusUpdate("task-2", studio.agent.contracts.TaskStatus.FAILED, null, null,
+              "AGENT_WORKER_REJECTED"));
     } finally {
       server.stop(0);
     }
@@ -94,7 +107,7 @@ class HttpTaskActivitiesTest {
         byte[] response = ("{\"status\":\"WAITING_FOR_APPROVAL\",\"artifactReference\":null,"
             + "\"failureCode\":null,\"approval\":{\"type\":\"SCREENSHOT_ROUTE_AMBIGUITY\","
             + "\"markerId\":\"users\",\"reasonCode\":\"ROUTE_EVIDENCE_INSUFFICIENT\","
-            + "\"reference\":\"approval://users\"}}" ).getBytes(StandardCharsets.UTF_8);
+            + "\"reference\":\"approval://screenshot-route/users\"}}" ).getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(200, response.length);
         exchange.getResponseBody().write(response);
         exchange.close();
@@ -105,9 +118,14 @@ class HttpTaskActivitiesTest {
       var outcome = activities.execute(new WorkflowInput("task-4", "project-4", TaskType.SCREENSHOT,
           "source://4", "template://4", "parameters://4", "provider://4", false));
       assertThat(outcome.status()).isEqualTo(studio.agent.contracts.TaskStatus.WAITING_FOR_APPROVAL);
-      assertThat(outcome.approval().reference()).isEqualTo("approval://users");
+      assertThat(outcome.approval().reference()).isEqualTo("approval://screenshot-route/users");
     } finally {
       server.stop(0);
     }
+  }
+
+  private static final class RecordingReporter implements PlatformStatusReporter {
+    private final List<PlatformStatusUpdate> values = new ArrayList<>();
+    @Override public void report(PlatformStatusUpdate update) { values.add(update); }
   }
 }

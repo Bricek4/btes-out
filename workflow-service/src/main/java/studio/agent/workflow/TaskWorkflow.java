@@ -25,4 +25,8 @@ public interface TaskWorkflow {
 
   @QueryMethod
   TaskWorkflowState state();
+
+  /** Used only by the internal bridge to make repeated starts idempotent and conflict-safe. */
+  @QueryMethod
+  WorkflowInput startInput();
 }

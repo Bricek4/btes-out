@@ -17,10 +17,10 @@ public record ActivityOutcome(TaskStatus status, String artifactReference, Strin
       throw new IllegalArgumentException("activity outcome has an unsupported status");
     }
     if (status == TaskStatus.SUCCEEDED) {
-      requireText(artifactReference, "artifactReference");
+      WorkflowInput.requireOpaqueReference(artifactReference, "artifact://", "artifactReference");
       if (failureCode != null || approval != null) throw new IllegalArgumentException("success cannot have failure or approval details");
     } else if (status == TaskStatus.FAILED) {
-      requireText(failureCode, "failureCode");
+      WorkflowInput.requireMachineCode(failureCode, "failureCode");
       if (artifactReference != null || approval != null) throw new IllegalArgumentException("failure cannot have artifact or approval details");
     } else if (status == TaskStatus.CANCELED) {
       if (artifactReference != null || failureCode != null || approval != null) throw new IllegalArgumentException("canceled activity cannot have result details");
@@ -31,17 +31,14 @@ public record ActivityOutcome(TaskStatus status, String artifactReference, Strin
     }
   }
 
-  private static void requireText(String value, String field) {
-    if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " is required");
-  }
 }
 
 /** Safe, typed human-confirmation payload returned by a worker when a marker is ambiguous. */
 record TaskApprovalRequest(String type, String markerId, String reasonCode, String reference) {
   TaskApprovalRequest {
-    if (type == null || type.isBlank() || markerId == null || markerId.isBlank()
-        || reasonCode == null || reasonCode.isBlank() || reference == null || reference.isBlank()) {
-      throw new IllegalArgumentException("approval request is incomplete");
-    }
+    WorkflowInput.requireMachineCode(type, "approval type");
+    WorkflowInput.requirePathSegment(markerId, "markerId");
+    WorkflowInput.requireMachineCode(reasonCode, "reasonCode");
+    WorkflowInput.requireOpaqueReference(reference, "approval://screenshot-route/", "reference");
   }
 }

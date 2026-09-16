@@ -65,9 +65,9 @@ class TaskWorkflowTest {
 
     waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
     WorkflowStub stub = WorkflowStub.fromTyped(workflow);
-    stub.signal("approve", new ApprovalDecision("", ""));
+    stub.signal("approve", new ApprovalDecision("", null));
     assertThat(workflow.state().status()).isEqualTo(TaskStatus.WAITING_FOR_APPROVAL);
-    stub.signal("approve", new ApprovalDecision("approve", "ship"));
+    stub.signal("approve", new ApprovalDecision("approve", null));
     waitForState(workflow, TaskStatus.RUNNING);
     assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
   }
@@ -94,7 +94,7 @@ class TaskWorkflowTest {
     waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
     workflow.pause();
     assertThat(workflow.state().pauseRequested()).isTrue();
-    workflow.approve(new ApprovalDecision("approve", "ship"));
+    workflow.approve(new ApprovalDecision("approve", null));
     waitForState(workflow, TaskStatus.PAUSED);
     workflow.resume();
     assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
@@ -110,10 +110,36 @@ class TaskWorkflowTest {
     waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
     assertThat(workflow.state().approvalRequest()).isEqualTo(new TaskApprovalRequest(
         "SCREENSHOT_ROUTE_AMBIGUITY", "users", "ROUTE_EVIDENCE_INSUFFICIENT", "approval://screenshot-route/users"));
-    workflow.approve(new ApprovalDecision("approve", "confirmed"));
+    workflow.approve(new ApprovalDecision("approve", "approval://screenshot-route/users"));
     assertThat(result.get(5, TimeUnit.SECONDS).status()).isEqualTo(TaskStatus.SUCCEEDED);
     assertThat(activities.calls).isEqualTo(2);
     assertThat(activities.lastApprovedReference).isEqualTo("approval://screenshot-route/users");
+  }
+
+  @Test
+  void approvedReferenceFromStartInputIsForwardedWithoutFreeFormPayload() throws Exception {
+    var workflow = newWorkflow("preapproved-reference");
+    WorkflowInput input = input("preapproved-reference", false)
+        .withApprovedReference("approval://screenshot-route/users/sha256-abc");
+
+    TaskWorkflowResult result = workflow.run(input);
+
+    assertThat(result.status()).isEqualTo(TaskStatus.SUCCEEDED);
+    assertThat(activities.lastApprovedReference)
+        .isEqualTo("approval://screenshot-route/users/sha256-abc");
+  }
+
+  @Test
+  void runtimeApprovalIgnoresAReferenceThatDoesNotMatchPendingEvidence() {
+    var workflow = newWorkflow("runtime-approval-binding");
+    activities.approvalOnFirst = true;
+    WorkflowClient.start(workflow::run, input("runtime-approval-binding", false));
+    waitForState(workflow, TaskStatus.WAITING_FOR_APPROVAL);
+
+    workflow.approve(new ApprovalDecision("approve", "approval://screenshot-route/another-marker"));
+
+    assertThat(workflow.state().status()).isEqualTo(TaskStatus.WAITING_FOR_APPROVAL);
+    workflow.cancel();
   }
 
   @Test
@@ -200,4 +226,5 @@ class TaskWorkflowTest {
       return new ActivityOutcome(TaskStatus.SUCCEEDED, "artifact://" + input.taskId(), null);
     }
   }
+
 }

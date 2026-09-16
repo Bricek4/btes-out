@@ -1,17 +1,43 @@
 package studio.agent.workflow;
 
-import java.util.concurrent.CountDownLatch;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
 
-/** Standalone Temporal worker entry point used by the workflow-service container. */
-public final class WorkflowServiceApplication {
-  private WorkflowServiceApplication() {}
+/** Deployable HTTP bridge and Temporal worker process. */
+@SpringBootApplication
+public class WorkflowServiceApplication {
+  public static void main(String[] args) {
+    SpringApplication.run(WorkflowServiceApplication.class, args);
+  }
 
-  public static void main(String[] args) throws InterruptedException {
-    WorkflowRuntimeConfig config = WorkflowRuntimeConfig.fromEnvironment();
-    TemporalRuntime runtime = TemporalRuntime.connect(config,
-        new HttpTaskActivities(config.agentWorkerBaseUrl(), config.agentWorkerToken()));
-    Runtime.getRuntime().addShutdownHook(new Thread(runtime::close, "workflow-runtime-shutdown"));
-    runtime.start();
-    new CountDownLatch(1).await();
+  @Bean
+  WorkflowRuntimeConfig workflowRuntimeConfig() {
+    return WorkflowRuntimeConfig.fromEnvironment();
+  }
+
+  @Bean
+  PlatformStatusReporter platformStatusReporter(WorkflowRuntimeConfig config) {
+    return new HttpPlatformStatusReporter(config.platformApiBaseUrl(), config.agentWorkerToken());
+  }
+
+  @Bean
+  TaskActivities taskActivities(WorkflowRuntimeConfig config, PlatformStatusReporter reporter) {
+    return new HttpTaskActivities(config.agentWorkerBaseUrl(), config.agentWorkerToken(), reporter);
+  }
+
+  @Bean(initMethod = "start", destroyMethod = "close")
+  TemporalRuntime temporalRuntime(WorkflowRuntimeConfig config, TaskActivities activities) {
+    return TemporalRuntime.connect(config, activities);
+  }
+
+  @Bean
+  WorkflowTaskGateway workflowTaskGateway(TemporalRuntime runtime, WorkflowRuntimeConfig config) {
+    return new TemporalWorkflowTaskGateway(runtime.client(), config.taskQueue());
+  }
+
+  @Bean
+  WorkflowServiceTokenFilter workflowServiceTokenFilter(WorkflowRuntimeConfig config) {
+    return new WorkflowServiceTokenFilter(config.workflowServiceToken());
   }
 }
