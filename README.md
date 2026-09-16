@@ -1,45 +1,16 @@
-# Agent Studio
+# Agent Studio workspace
 
-An AI workflow workspace for importing software projects, generating project documentation, applying reusable output templates, and capturing browser screenshots.
-
-The platform is built as four Java services with a Vue 3 frontend. Its local stack runs with Docker Compose; the production profile targets a single Linux host and an S3-compatible object store.
-
-## Planned workflows
-
-- Import a project from Git or ZIP.
-- Generate Markdown project documentation into `docs/`, review changes, and update documentation incrementally.
-- Optionally render documentation as HTML and capture screenshots from a user-provided running application URL.
-- Manage personal and administrator-published templates, task history, approvals, and artifacts.
+The frontend is a Vue 3 and TypeScript workspace for the Agent Studio platform. It keeps chat input transient, shows an editable draft before task creation, and uses the Platform API for projects, templates, providers, login profiles, tasks, events and artifacts.
 
 ## Development
 
-## Modules
-
-| Module | Responsibility |
-| --- | --- |
-| `contracts` | Domain states, DTOs, and the OpenAPI task contract. |
-| `platform-api` | HTTP API, persistence migrations, authorization, and task read model. |
-| `workflow-service` | Workflow orchestration boundary. |
-| `agent-worker` | Documentation-analysis worker boundary. |
-| `browser-worker` | Browser-screenshot worker boundary. |
-
-Services depend only on `contracts`; workers and workflow orchestration do not depend on
-`platform-api` or on each other.
-
-## Build
-
-JDK 21, Spring Boot 4.1.1, and Jackson 3 are used throughout. A Maven Wrapper is checked in
-because a system Maven installation is not required:
-
 ```sh
-./mvnw test
+npm install
+npm run dev
 ```
 
-The stable HTTP and SSE task contract is at
-[`contracts/openapi/agent-studio-api.yaml`](contracts/openapi/agent-studio-api.yaml). Task creation
-and cancellation require an `Idempotency-Key`; a repeated create request returns the previously
-accepted task. Create requests select an immutable template version and provide at most 100 JSON
-parameters (at most 64 KiB serialized), which Platform API validates against that template's schema.
-An optional provider-profile/model pair selects a model for a single task; omitting both uses the
-user's personal default. Platform API verifies provider-profile ownership.
-Never commit credentials or `.env` files.
+The Vite development server proxies `/api` to `http://localhost:8080`. Set `VITE_API_BASE_URL` when the Platform API is hosted elsewhere.
+
+## Production image
+
+The Dockerfile builds the static bundle and serves it with Nginx. `/api` is proxied to the Compose service named `platform-api`; internal worker paths are never exposed by the frontend container.
