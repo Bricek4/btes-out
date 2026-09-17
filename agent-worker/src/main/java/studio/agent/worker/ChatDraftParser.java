@@ -36,6 +36,7 @@ public final class ChatDraftParser {
         : normalized.contains("guide") || normalized.contains("how to") ? TaskType.USER_GUIDE : TaskType.PROJECT_DOCS;
     Map<String, String> parameters = new LinkedHashMap<>();
     parameters.put("goal", message.strip());
+    if (type == TaskType.PROJECT_DOCS) parameters.put("title", "项目架构文档");
     parameters.put("outputPath", switch (type) {
       case HTML -> "site/index.html";
       case USER_GUIDE -> "docs/user-guide.md";

@@ -72,12 +72,15 @@ public class AuthService {
       .orElseThrow(()->new ResponseStatusException(HttpStatus.BAD_REQUEST,"TOKEN_INVALID_OR_EXPIRED")); jdbc.sql("UPDATE auth_tokens SET used_at=:now WHERE id=:id").param("now",now).param("id",id[0]).update(); return id[1]; }
   private void seedTemplates(UUID org,UUID admin,OffsetDateTime now) {
     for (var seed : new String[][]{
-        {"00000000-0000-0000-0000-000000000101","Project documentation","MARKDOWN","# {{title}}\n\n{{content}}","",""},
+        {"00000000-0000-0000-0000-000000000101","Architecture document","MARKDOWN","# {{title}}\n\n{{content}}","",""},
         {"00000000-0000-0000-0000-000000000102","User guide","MARKDOWN","# {{title}}\n\n{{content}}","",""},
         {"00000000-0000-0000-0000-000000000103","HTML publication","HTML","","<main><h1>{{title}}</h1><section>{{content}}</section></main>","main{max-width:960px;margin:0 auto;padding:2rem;font-family:system-ui,sans-serif}"},
         {"00000000-0000-0000-0000-000000000104","Screenshot set","MARKDOWN","# {{title}}","",""}}) {
       var template=UUID.randomUUID(); jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,NULL,:skill,:name,'PUBLIC',:now)").param("id",template).param("org",org).param("skill",UUID.fromString(seed[0])).param("name",seed[1]).param("now",now).update();
-      jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,:format,'{\"type\":\"object\",\"additionalProperties\":false}'::jsonb,'{}'::jsonb,'[]'::jsonb,NULLIF(:markdown,''),NULLIF(:html,''),NULLIF(:css,''),'[]'::jsonb,:user,:now)").param("id",UUID.randomUUID()).param("template",template).param("format",seed[2]).param("markdown",seed[3]).param("html",seed[4]).param("css",seed[5]).param("user",admin).param("now",now).update();
+      var schema = "00000000-0000-0000-0000-000000000101".equals(seed[0])
+          ? "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"title\":{\"type\":\"string\",\"title\":\"文档标题\",\"default\":\"项目架构文档\"},\"audience\":{\"type\":\"string\",\"title\":\"阅读对象\",\"default\":\"开发、测试与运维\"}},\"required\":[\"title\"]}"
+          : "{\"type\":\"object\",\"additionalProperties\":false}";
+      jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,:format,CAST(:schema AS jsonb),'{}'::jsonb,'[]'::jsonb,NULLIF(:markdown,''),NULLIF(:html,''),NULLIF(:css,''),'[]'::jsonb,:user,:now)").param("id",UUID.randomUUID()).param("template",template).param("format",seed[2]).param("schema",schema).param("markdown",seed[3]).param("html",seed[4]).param("css",seed[5]).param("user",admin).param("now",now).update();
     }
   }
   private static String required(String v){if(v==null||v.isBlank())throw new IllegalArgumentException("value is required");return v.trim();}

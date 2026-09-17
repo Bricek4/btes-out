@@ -160,6 +160,13 @@ class ArtifactService {
     }
   }
 
+  byte[] downloadBytes(StoredVersion version) {
+    if (version.sizeBytes() > MAX_EXPORT_BYTES) {
+      throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "ARTIFACT_DOWNLOAD_TOO_LARGE");
+    }
+    return objects.get(version.objectKey(), MAX_EXPORT_BYTES);
+  }
+
   @Transactional
   VersionView replaceImage(CurrentUser user, UUID artifactId, String mediaType, byte[] content) {
     if (content.length == 0 || content.length > MAX_REPLACEMENT_BYTES) throw new IllegalArgumentException("replacement image size is invalid");
@@ -202,13 +209,6 @@ class ArtifactService {
     jdbc.sql("UPDATE artifact_versions SET verification_report=CAST(:report AS jsonb) WHERE artifact_id=:id AND ordinal=:ordinal")
         .param("report", report.toJson()).param("id", artifactId).param("ordinal", artifact.currentVersion()).update();
     return report;
-  }
-
-  void streamDownload(StoredVersion version, java.io.OutputStream output) {
-    long copied = objects.copyTo(version.objectKey(), MAX_EXPORT_BYTES, output);
-    if (copied != version.sizeBytes()) {
-      throw new IllegalStateException("stored artifact size changed during download");
-    }
   }
 
   private ArtifactRow readable(CurrentUser user, UUID artifactId) {

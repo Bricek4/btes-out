@@ -10,7 +10,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import studio.agent.platform.security.CurrentUser;
 
 @RestController
@@ -52,14 +51,13 @@ public class ArtifactController {
   }
 
   @GetMapping("/artifacts/{artifactId}/download")
-  ResponseEntity<StreamingResponseBody> download(CurrentUser user, @PathVariable UUID artifactId,
+  ResponseEntity<byte[]> download(CurrentUser user, @PathVariable UUID artifactId,
                                 @RequestParam(required = false) Integer version) {
     var stored = artifacts.readableVersion(user, artifactId, version);
-    StreamingResponseBody body = output -> artifacts.streamDownload(stored, output);
     return ResponseEntity.ok().contentType(safePreviewMediaType(stored.mediaType()))
         .cacheControl(CacheControl.noStore()).header(HttpHeaders.CONTENT_DISPOSITION,
             ContentDisposition.attachment().filename(stored.name(), StandardCharsets.UTF_8).build().toString())
-        .header("X-Content-Type-Options", "nosniff").body(body);
+        .header("X-Content-Type-Options", "nosniff").body(artifacts.downloadBytes(stored));
   }
 
   @GetMapping(value = {"/tasks/{taskId}/artifacts/export", "/tasks/{taskId}/artifacts/export.zip"}, produces = "application/zip")

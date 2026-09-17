@@ -84,6 +84,9 @@ public final class ArtifactGenerationService {
         .append("Use only facts present in the source evidence; do not invent product behavior or credentials.\n")
         .append("Return only the artifact body. Do not include commentary, code fences, scripts, or executable HTML.\n")
         .append("For Markdown, include screenshot marker comments only for pages that can be reached using supplied route evidence. Each marker must use the versioned agent-studio:screenshot:v1 JSON shape with a unique id, an allowed loginProfileRef, target, menuPath/actions when known, and caption.\n")
+        .append(request.type() == TaskType.PROJECT_DOCS
+            ? "This is an architecture document, not a README. Cover the system purpose and scope, architecture overview, service boundaries, request and data flow, data and storage model, deployment topology, security and observability, key tradeoffs, and known gaps. Tie each claim to evidence and label unknowns instead of inventing them. The selected Markdown template already renders the document title; do not emit a duplicate top-level title heading.\n"
+            : "")
         .append("Task goal: ").append(request.title()).append('\n')
         .append("Output format: ").append(request.outputFormat()).append("\nOutput path: ").append(request.outputPath()).append('\n')
         .append("Template:\n").append(request.templateBody()).append("\n")

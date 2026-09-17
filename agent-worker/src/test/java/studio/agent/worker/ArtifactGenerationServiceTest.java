@@ -29,6 +29,19 @@ class ArtifactGenerationServiceTest {
     assertFalse(promptSent.toString().contains("sk-local-secret"));
   }
 
+  @Test void asksProjectDocumentationModelsForAnArchitectureDocument() {
+    StringBuilder promptSent = new StringBuilder();
+    var service = new ArtifactGenerationService(prompt -> { promptSent.append(prompt); return "## Services\nEvidence based"; });
+
+    service.generate(TaskType.PROJECT_DOCS, "service boundary", "# {{content}}", "");
+
+    assertTrue(promptSent.toString().contains("architecture document"));
+    assertTrue(promptSent.toString().contains("service boundaries"));
+    assertTrue(promptSent.toString().contains("data flow"));
+    assertTrue(promptSent.toString().contains("deployment topology"));
+    assertTrue(promptSent.toString().contains("do not emit a duplicate top-level title"));
+  }
+
   @Test void preservesManualSectionAndPassesPriorContentOnlyForIncrementalUpdates() {
     String previous = "# Old\n<!-- agent-studio:manual:start -->Keep this<!-- agent-studio:manual:end -->";
     StringBuilder promptSent = new StringBuilder();
