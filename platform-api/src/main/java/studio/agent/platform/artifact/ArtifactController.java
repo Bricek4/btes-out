@@ -63,12 +63,12 @@ public class ArtifactController {
   }
 
   @GetMapping(value = {"/tasks/{taskId}/artifacts/export", "/tasks/{taskId}/artifacts/export.zip"}, produces = "application/zip")
-  ResponseEntity<StreamingResponseBody> export(CurrentUser user, @PathVariable UUID taskId) {
+  ResponseEntity<byte[]> export(CurrentUser user, @PathVariable UUID taskId) {
     var plan = artifacts.exportPlan(user, taskId);
     return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/zip"))
         .cacheControl(CacheControl.noStore()).header(HttpHeaders.CONTENT_DISPOSITION,
             ContentDisposition.attachment().filename("artifacts-" + taskId + ".zip", StandardCharsets.UTF_8).build().toString())
-        .body(output -> artifacts.writeExport(plan, output));
+        .body(artifacts.exportBytes(plan));
   }
 
   @PutMapping(value = "/artifacts/{artifactId}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

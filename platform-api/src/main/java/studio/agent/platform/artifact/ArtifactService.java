@@ -1,5 +1,6 @@
 package studio.agent.platform.artifact;
 
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -145,6 +146,15 @@ class ArtifactService {
       }
       zip.finish();
       zip.flush();
+    } catch (java.io.IOException exception) {
+      throw new IllegalStateException("artifact ZIP export failed", exception);
+    }
+  }
+
+  byte[] exportBytes(ExportPlan plan) {
+    try (var bytes = new ByteArrayOutputStream()) {
+      writeExport(plan, bytes);
+      return bytes.toByteArray();
     } catch (java.io.IOException exception) {
       throw new IllegalStateException("artifact ZIP export failed", exception);
     }
