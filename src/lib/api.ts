@@ -16,6 +16,7 @@ import type {
   TemplateVersion,
   TemplateVersionInput,
 } from '../types'
+import { apiErrorMessage } from './api-error'
 
 const API_ROOT = import.meta.env.VITE_API_BASE_URL ?? ''
 const TOKEN_KEY = 'agent-studio.session'
@@ -201,8 +202,15 @@ export const api = {
     const session = token()
     if (session) headers.set('Authorization', `Bearer ${session}`)
     const response = await fetch(`${API_ROOT}/api/v1/projects/${projectId}/imports/zip`, { method: 'POST', headers, body: form })
-    if (!response.ok) throw new ApiError('ZIP 导入失败', response.status)
-    return response.json()
+    const text = await response.text()
+    let body: unknown = null
+    try { body = text ? JSON.parse(text) : null } catch { body = text }
+    if (!response.ok) {
+      const record = body && typeof body === 'object' && !Array.isArray(body) ? body as { code?: unknown } : null
+      const code = typeof record?.code === 'string' ? record.code : undefined
+      throw new ApiError(apiErrorMessage(response.status, body, 'ZIP 导入失败'), response.status, code)
+    }
+    return body
   },
   createTemplate: (name: string, skillId: string, publicTemplate = false) => request<Template>('/api/v1/templates', {
     method: 'POST',

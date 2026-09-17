@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test:template-form": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "dependencies": {
     "markdown-it": "15.0.2",

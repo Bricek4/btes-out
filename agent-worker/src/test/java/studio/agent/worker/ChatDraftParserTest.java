@@ -28,6 +28,20 @@ class ChatDraftParserTest {
     assertDraft("Capture a screenshot of settings", TaskType.SCREENSHOT, "manifests/screenshots.json");
   }
 
+  @Test void recognizesChineseUserGuideRequests() {
+    var draft = parser.parse("生成用户操作手册，并为管理员菜单添加截图");
+
+    assertEquals(TaskType.USER_GUIDE, draft.workflowType());
+    assertEquals("docs/user-guide.md", draft.parameters().get("outputPath"));
+  }
+
+  @Test void recognizesChineseScreenshotRequests() {
+    var draft = parser.parse("截图管理员登录后的用户列表");
+
+    assertEquals(TaskType.SCREENSHOT, draft.workflowType());
+    assertEquals("manifests/screenshots.json", draft.parameters().get("outputPath"));
+  }
+
   @Test void acceptsStrictModelJsonAndRedactsCredentialAssignmentsFromTheTransientPrompt() {
     StringBuilder prompt = new StringBuilder();
     var modelParser = new ChatDraftParser(value -> {

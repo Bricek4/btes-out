@@ -47,7 +47,8 @@ import ProjectCard from './components/ProjectCard.vue'
 import TaskTable from './components/TaskTable.vue'
 import ConfigManagerModal from './components/ConfigManagerModal.vue'
 import { api, ApiError } from './lib/api'
-import type { Approval, ArtifactNode, Member, Project, ShareGrant, Task, TaskDraft, TaskEvent, Template, Provider, ProviderModel, LoginProfile, TaskStatus } from './types'
+import type { Approval, ArtifactNode, Member, Project, ShareGrant, Task, TaskDraft, TaskEvent, Template, TemplateVersion, Provider, ProviderModel, LoginProfile, TaskStatus } from './types'
+import { initializeTemplateParameters, mergeTemplateParameters, templateFields as readTemplateFields, type TemplateFormField, type TemplateParameterValue } from './lib/template-form'
 
 const activeSection = ref('overview')
 const sidebarCollapsed = ref(false)
@@ -97,6 +98,12 @@ const loginBusy = ref(false)
 const searchQuery = ref('')
 const selectedProjectId = ref('')
 const selectedTemplateVersionId = ref('')
+const selectedTemplateVersion = ref<TemplateVersion | null>(null)
+const templateVersionCache = ref<Record<string, TemplateVersion>>({})
+const templateVersionBusy = ref(false)
+const templateVersionError = ref('')
+const templateFieldValues = ref<Record<string, TemplateParameterValue>>({})
+let templateVersionSequence = 0
 const selectedProviderId = ref('')
 const selectedModelId = ref('')
 const selectableModels = ref<ProviderModel[]>([])
@@ -109,6 +116,7 @@ const gitBranch = ref('')
 const gitToken = ref('')
 const gitBranches = ref<string[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+const MAX_IMPORT_BYTES = 100 * 1024 * 1024
 const blockingOverlay = computed(() => showLogin.value || showLaunch.value || showNewProject.value || showGitImport.value || Boolean(configMode.value) || showShare.value)
 const focusableSelector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]'
 let focusBeforeDialog: HTMLElement | null = null
@@ -127,6 +135,22 @@ watch([showLogin, showLaunch, showNewProject, showGitImport, configMode, showSha
 const sessionPresent = ref(Boolean(api.getSession()))
 const signedIn = computed(() => sessionPresent.value)
 const activeProject = computed(() => projects.value.find((project) => project.projectId === selectedProjectId.value) ?? projects.value[0])
+const templateOptions = computed(() => {
+  const available = templates.value.filter((template) => Boolean(template.latestVersionId))
+  const type = draft.value?.workflowType
+  const compatible = type ? available.filter((template) => template.taskType === type) : available
+  return compatible.length ? compatible : available
+})
+const taskTemplateFields = computed<TemplateFormField[]>(() => {
+  const fields = readTemplateFields(selectedTemplateVersion.value?.parameterSchema)
+  if (draft.value?.workflowType !== 'SCREENSHOT') return fields
+  const baseUrl = fields.find((field) => field.key === 'baseUrl')
+  if (baseUrl) return fields.map((field) => field.key === 'baseUrl' ? { ...field, required: true, label: field.label || '应用地址' } : field)
+  return [{ key: 'baseUrl', label: '应用地址', type: 'string', required: true, defaultValue: null }, ...fields]
+})
+const templateParameters = computed(() => draft.value
+  ? mergeTemplateParameters(draft.value.parameters, taskTemplateFields.value, templateFieldValues.value)
+  : {})
 const visibleTasks = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   if (!query) return tasks.value
@@ -161,6 +185,60 @@ function notify(message: string) {
   window.setTimeout(() => { if (toastMessage.value === message) toastMessage.value = '' }, 3200)
 }
 
+async function loadTemplateVersion(versionId: string) {
+  const sequence = ++templateVersionSequence
+  templateVersionError.value = ''
+  if (!versionId) {
+    selectedTemplateVersion.value = null
+    templateFieldValues.value = {}
+    templateVersionBusy.value = false
+    return
+  }
+  const cached = templateVersionCache.value[versionId]
+  if (cached) {
+    selectedTemplateVersion.value = cached
+    templateVersionBusy.value = false
+    return
+  }
+  const template = templates.value.find((item) => item.latestVersionId === versionId)
+  if (!template) {
+    selectedTemplateVersion.value = null
+    templateVersionBusy.value = false
+    templateVersionError.value = '模板版本暂时不可用，请刷新模板库'
+    return
+  }
+  templateVersionBusy.value = true
+  try {
+    const versions = await api.templateVersions(template.id)
+    if (sequence !== templateVersionSequence) return
+    const nextCache = { ...templateVersionCache.value }
+    versions.forEach((version) => { nextCache[version.id] = version })
+    templateVersionCache.value = nextCache
+    const selected = versions.find((version) => version.id === versionId)
+      ?? [...versions].sort((left, right) => right.ordinal - left.ordinal)[0]
+    if (!selected) throw new ApiError('模板还没有可用版本', 404)
+    selectedTemplateVersion.value = selected
+    if (selected.id !== selectedTemplateVersionId.value) selectedTemplateVersionId.value = selected.id
+  } catch (error) {
+    if (sequence === templateVersionSequence) {
+      selectedTemplateVersion.value = null
+      templateVersionError.value = error instanceof ApiError ? error.message : '模板字段读取失败，请重试'
+    }
+  } finally {
+    if (sequence === templateVersionSequence) templateVersionBusy.value = false
+  }
+}
+
+function isValidHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.trim()) return false
+  try {
+    const url = new URL(value.trim())
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname) && !url.username && !url.hash
+  } catch {
+    return false
+  }
+}
+
 async function loadData(showSpinner = true) {
   if (!signedIn.value) {
     showLogin.value = true
@@ -185,6 +263,7 @@ async function loadData(showSpinner = true) {
     if (!selectedTemplateVersionId.value) {
       selectedTemplateVersionId.value = templates.value.find((template) => template.latestVersionId)?.latestVersionId ?? ''
     }
+    void loadTemplateVersion(selectedTemplateVersionId.value)
   }
   if (providerResult.status === 'fulfilled') providers.value = providerResult.value
   if (profileResult.status === 'fulfilled') profiles.value = profileResult.value
@@ -286,7 +365,31 @@ async function parseDraft() {
 
 async function launchTask() {
   if (!draft.value || !activeProject.value || !selectedTemplateVersionId.value.trim()) {
-    errorMessage.value = !activeProject.value ? '请先创建或选择一个项目' : '请填写模板版本 ID'
+    errorMessage.value = !activeProject.value ? '请先创建或选择一个项目' : '请选择一个模板版本'
+    return
+  }
+  if (templateVersionBusy.value) {
+    errorMessage.value = '模板字段正在读取，请稍候'
+    return
+  }
+  if (templateVersionError.value) {
+    errorMessage.value = templateVersionError.value
+    return
+  }
+  const selectedTemplate = templates.value.find((template) => template.latestVersionId === selectedTemplateVersionId.value)
+  if (selectedTemplate && selectedTemplate.taskType !== draft.value.workflowType) {
+    errorMessage.value = '请选择与当前任务类型匹配的模板'
+    return
+  }
+  const parameters = templateParameters.value
+  const missing = taskTemplateFields.value
+    .filter((field) => field.required && (parameters[field.key] === null || parameters[field.key] === undefined || parameters[field.key] === ''))
+  if (missing.length) {
+    errorMessage.value = `请填写：${missing.map((field) => field.label).join('、')}`
+    return
+  }
+  if (draft.value.workflowType === 'SCREENSHOT' && !isValidHttpUrl(parameters.baseUrl)) {
+    errorMessage.value = '请输入有效的应用地址（http 或 https）'
     return
   }
   if (selectedProviderId.value && !selectedModelId.value) {
@@ -299,7 +402,7 @@ async function launchTask() {
       projectId: activeProject.value.projectId,
       type: draft.value.workflowType,
       templateVersionId: selectedTemplateVersionId.value.trim(),
-      parameters: draft.value.parameters,
+      parameters,
       ...(selectedProviderId.value ? { providerProfileId: selectedProviderId.value, modelId: selectedModelId.value } : {}),
     }, taskIdempotencyKey.value)
     tasks.value = [created, ...tasks.value]
@@ -403,7 +506,34 @@ async function createProject() {
 async function importZip(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file || !importProjectId.value) return
+  errorMessage.value = ''
+  if (!file) return
+  const project = projects.value.find((item) => item.projectId === importProjectId.value)
+  if (!project) {
+    errorMessage.value = '请先选择一个项目空间'
+    input.value = ''
+    return
+  }
+  if (project.shared) {
+    errorMessage.value = '共享项目为只读，请切换到自己拥有的项目后上传'
+    input.value = ''
+    return
+  }
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    errorMessage.value = '请选择 .zip 格式的源码包'
+    input.value = ''
+    return
+  }
+  if (file.size === 0) {
+    errorMessage.value = 'ZIP 文件不能为空'
+    input.value = ''
+    return
+  }
+  if (file.size > MAX_IMPORT_BYTES) {
+    errorMessage.value = 'ZIP 文件不能超过 100 MB'
+    input.value = ''
+    return
+  }
   importBusy.value = true
   try {
     await api.importZip(importProjectId.value, file)
@@ -418,6 +548,15 @@ async function importZip(event: Event) {
 }
 
 function pickImport(projectId: string) {
+  const project = projects.value.find((item) => item.projectId === projectId)
+  if (!project) {
+    errorMessage.value = '请先选择一个项目空间'
+    return
+  }
+  if (project.shared) {
+    errorMessage.value = '共享项目为只读，请切换到自己拥有的项目后上传'
+    return
+  }
   importProjectId.value = projectId
   fileInput.value?.click()
 }
@@ -453,6 +592,20 @@ watch(selectedProviderId, async (providerId) => {
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '模型列表加载失败'
   }
+})
+
+watch(selectedTemplateVersionId, (versionId) => { void loadTemplateVersion(versionId) })
+
+watch([draft, taskTemplateFields], () => {
+  templateFieldValues.value = initializeTemplateParameters(taskTemplateFields.value, draft.value?.parameters)
+}, { deep: true })
+
+watch(() => draft.value?.workflowType, (type) => {
+  if (!type) return
+  const current = templates.value.find((template) => template.latestVersionId === selectedTemplateVersionId.value)
+  if (current?.taskType === type) return
+  const compatible = templates.value.find((template) => template.taskType === type && template.latestVersionId)
+  if (compatible?.latestVersionId) selectedTemplateVersionId.value = compatible.latestVersionId
 })
 
 async function inspectGit() {
@@ -759,7 +912,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobalKeydown)
         </template>
 
         <template v-else-if="activeSection === 'projects'">
-          <section class="toolbar-card"><div class="toolbar-card__copy"><div class="toolbar-card__icon"><FolderPlus :size="19" /></div><div><strong>导入一个项目</strong><span>支持 Git URL 或 ZIP，导入后会生成不可变源码版本</span></div></div><div class="toolbar-card__actions"><button class="button button--quiet" type="button" :disabled="!projects.length" @click="openGitImport()"><Github :size="16" />Git URL</button><button class="button button--quiet" type="button" :disabled="!projects.length" @click="pickImport(activeProject?.projectId ?? '')"><Upload :size="16" />上传 ZIP</button><button class="button button--primary" type="button" @click="showNewProject = true"><Plus :size="16" />新建项目</button><input ref="fileInput" class="visually-hidden" type="file" accept=".zip,application/zip" @change="importZip" /></div></section>
+          <section class="toolbar-card"><div class="toolbar-card__copy"><div class="toolbar-card__icon"><FolderPlus :size="19" /></div><div><strong>导入一个项目</strong><span>支持 Git URL 或 ZIP，导入后会生成不可变源码版本</span></div></div><div class="toolbar-card__actions"><button class="button button--quiet" type="button" :disabled="!projects.length" @click="openGitImport()"><Github :size="16" />Git URL</button><button class="button button--quiet" type="button" :disabled="!activeProject || activeProject.shared || importBusy" @click="pickImport(activeProject?.projectId ?? '')"><LoaderCircle v-if="importBusy" class="spin" :size="16" /><Upload v-else :size="16" />{{ activeProject?.shared ? '共享项目只读' : importBusy ? '导入中…' : '上传 ZIP' }}</button><button class="button button--primary" type="button" @click="showNewProject = true"><Plus :size="16" />新建项目</button><input ref="fileInput" class="visually-hidden" type="file" accept=".zip,application/zip" @change="importZip" /></div></section>
           <section class="content-section"><div class="section-head"><div><span class="section-head__eyebrow">PROJECT SPACES</span><h3>你的项目</h3></div><div class="search-box"><Search :size="15" /><input v-model="searchQuery" placeholder="搜索项目" /></div></div><div class="project-grid"><ProjectCard v-for="(project, index) in projects" :key="project.projectId" :project="project" :tone="(['violet', 'cyan', 'amber', 'rose'] as const)[index % 4]" @open="selectedProjectId = project.projectId; openLaunch()" /><div v-if="projects.length === 0" class="empty-card"><div class="empty-card__icon"><FolderPlus :size="22" /></div><strong>创建第一个项目空间</strong><span>导入源码后，文档和截图任务会绑定到具体 revision</span><button class="button button--primary" type="button" @click="showNewProject = true">新建项目</button></div></div></section>
         </template>
 
@@ -791,7 +944,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobalKeydown)
       <div v-if="selectedTask.resultReference && flatArtifacts.length === 0" class="artifact-preview"><div class="artifact-preview__top"><span><FileCode2 :size="15" />旧版产物引用</span></div><div class="artifact-preview__body"><div class="artifact-preview__file"><FileText :size="18" /><span>{{ selectedTask.resultReference }}</span></div><div class="artifact-preview__hint">产物树暂未返回此引用对应的版本。</div></div></div>
     </aside>
 
-    <div v-if="showLaunch" class="drawer-layer" @click.self="showLaunch = false"><section class="launch-drawer" role="dialog" aria-modal="true" aria-labelledby="launch-title"><div class="launch-drawer__head"><div><span class="section-head__eyebrow">NEW WORKFLOW</span><h2 id="launch-title">描述你想交付的结果</h2><p>先生成草稿，确认后才会创建任务。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="showLaunch = false"><X :size="19" /></button></div><div class="launch-drawer__body"><div v-if="errorMessage" class="config-error">{{ errorMessage }}</div><div class="chat-box"><div class="chat-box__label"><Sparkles :size="15" />自然语言目标</div><textarea v-model="chatText" aria-label="自然语言目标" placeholder="例如：为这个项目生成一份面向维护者的项目文档，并为管理员用户列表添加截图…" @keydown.meta.enter="parseDraft" @keydown.ctrl.enter="parseDraft" /><div class="chat-box__footer"><span>Enter 发送 · ⌘↵ 解析草稿</span><button class="send-button" type="button" aria-label="解析任务草稿" :disabled="draftBusy || !chatText.trim()" @click="parseDraft"><LoaderCircle v-if="draftBusy" class="spin" :size="16" /><Send v-else :size="16" /></button></div></div><div v-if="draft" class="draft-card"><div class="draft-card__top"><div class="draft-type"><span class="draft-type__icon"><FileText v-if="draft.workflowType === 'PROJECT_DOCS'" :size="15" /><BookOpenCheck v-else-if="draft.workflowType === 'USER_GUIDE'" :size="15" /><Code2 v-else-if="draft.workflowType === 'HTML'" :size="15" /><ScanLine v-else :size="15" /></span><div><span class="section-head__eyebrow">EDITABLE DRAFT</span><strong>{{ typeLabels[draft.workflowType] }}</strong></div></div><span class="draft-ready"><Check :size="13" />未启动</span></div><p>{{ draft.summary }}</p><div class="draft-fields"><label>项目空间<select v-model="selectedProjectId"><option value="" disabled>选择项目</option><option v-for="project in projects" :key="project.projectId" :value="project.projectId">{{ project.name }}</option></select></label><label>模板版本 ID<input v-model="selectedTemplateVersionId" placeholder="粘贴 immutable version UUID" /></label></div><div class="draft-fields draft-fields--provider"><label>Provider<select v-model="selectedProviderId"><option value="">使用默认 Provider</option><option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select></label><label>模型<select v-model="selectedModelId" :disabled="!selectedProviderId"><option value="">{{ selectedProviderId ? '选择模型' : '跟随默认模型' }}</option><option v-for="model in selectableModels" :key="model.modelId" :value="model.modelId">{{ model.displayName }}</option></select></label></div><div class="draft-params"><span v-for="(value, key) in draft.parameters" :key="key" class="param-chip"><b>{{ key }}</b>{{ value }}</span></div><div class="draft-card__actions"><button class="button button--quiet" type="button" @click="draft = null">重新编辑</button><button class="button button--primary" type="button" :disabled="taskBusy" @click="launchTask"><LoaderCircle v-if="taskBusy" class="spin" :size="15" />确认并创建任务 <ArrowRight v-if="!taskBusy" :size="15" /></button></div></div><div v-else class="suggestions"><span>试试这些目标</span><button type="button" @click="chatText = '生成项目文档，包含源码结构和关键入口'; parseDraft()"><FileText :size="15" />项目文档</button><button type="button" @click="chatText = '生成用户操作手册，并为管理员菜单添加截图'; parseDraft()"><BookOpenCheck :size="15" />用户手册</button><button type="button" @click="chatText = '生成一个响应式 HTML 项目介绍页面'; parseDraft()"><Code2 :size="15" />HTML 页面</button><button type="button" @click="chatText = '截图管理员登录后的用户列表'; parseDraft()"><ScanLine :size="15" />自动截图</button></div></div></section></div>
+    <div v-if="showLaunch" class="drawer-layer" @click.self="showLaunch = false"><section class="launch-drawer" role="dialog" aria-modal="true" aria-labelledby="launch-title"><div class="launch-drawer__head"><div><span class="section-head__eyebrow">NEW WORKFLOW</span><h2 id="launch-title">描述你想交付的结果</h2><p>先生成草稿，确认后才会创建任务。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="showLaunch = false"><X :size="19" /></button></div><div class="launch-drawer__body"><div v-if="errorMessage" class="config-error">{{ errorMessage }}</div><div class="chat-box"><div class="chat-box__label"><Sparkles :size="15" />自然语言目标</div><textarea v-model="chatText" aria-label="自然语言目标" placeholder="例如：为这个项目生成一份面向维护者的项目文档，并为管理员用户列表添加截图…" @keydown.meta.enter="parseDraft" @keydown.ctrl.enter="parseDraft" /><div class="chat-box__footer"><span>Enter 发送 · ⌘↵ 解析草稿</span><button class="send-button" type="button" aria-label="解析任务草稿" :disabled="draftBusy || !chatText.trim()" @click="parseDraft"><LoaderCircle v-if="draftBusy" class="spin" :size="16" /><Send v-else :size="16" /></button></div></div><div v-if="draft" class="draft-card"><div class="draft-card__top"><div class="draft-type"><span class="draft-type__icon"><FileText v-if="draft.workflowType === 'PROJECT_DOCS'" :size="15" /><BookOpenCheck v-else-if="draft.workflowType === 'USER_GUIDE'" :size="15" /><Code2 v-else-if="draft.workflowType === 'HTML'" :size="15" /><ScanLine v-else :size="15" /></span><div><span class="section-head__eyebrow">EDITABLE DRAFT</span><strong>{{ typeLabels[draft.workflowType] }}</strong></div></div><span class="draft-ready"><Check :size="13" />未启动</span></div><p>{{ draft.summary }}</p><div class="draft-fields"><label>项目空间<select v-model="selectedProjectId"><option value="" disabled>选择项目</option><option v-for="project in projects" :key="project.projectId" :value="project.projectId">{{ project.name }}</option></select></label><label>输出模板<select v-if="templateOptions.length" v-model="selectedTemplateVersionId" :disabled="templateVersionBusy" aria-label="输出模板"><option v-for="template in templateOptions" :key="template.id" :value="template.latestVersionId ?? ''">{{ template.name }} · {{ typeLabels[template.taskType] ?? template.taskType }} · v{{ template.latestVersion ?? '最新' }}</option></select><input v-else v-model="selectedTemplateVersionId" placeholder="输入模板版本 UUID" aria-label="输出模板版本" /><small v-if="templateVersionBusy">正在读取模板字段…</small><small v-else-if="selectedTemplateVersion">当前版本 v{{ selectedTemplateVersion.ordinal }} · 字段由模板定义</small></label></div><div v-if="templateVersionError" class="config-error" role="alert">{{ templateVersionError }}</div><div v-if="templateVersionBusy" class="template-params-status"><LoaderCircle class="spin" :size="14" />正在读取模板参数</div><div v-else-if="taskTemplateFields.length" class="draft-template-fields"><div class="draft-template-fields__head"><span>任务参数</span><small>选择模板后自动生成</small></div><div class="draft-fields"><template v-for="field in taskTemplateFields" :key="field.key"><label v-if="field.type !== 'boolean'" class="template-param"><span>{{ field.label }}<em v-if="field.required"> · 必填</em></span><input v-model="templateFieldValues[field.key]" :type="field.type === 'number' ? 'number' : 'text'" :placeholder="field.type === 'number' ? '输入数字' : `填写${field.label}`" :aria-label="field.label" /></label><label v-else class="template-param-toggle"><span><input v-model="templateFieldValues[field.key]" type="checkbox" :aria-label="field.label" />{{ field.label }}<em v-if="field.required"> · 必填</em></span><small>{{ field.key }}</small></label></template></div></div><div class="draft-fields draft-fields--provider"><label>Provider<select v-model="selectedProviderId"><option value="">使用默认 Provider</option><option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option></select></label><label>模型<select v-model="selectedModelId" :disabled="!selectedProviderId"><option value="">{{ selectedProviderId ? '选择模型' : '跟随默认模型' }}</option><option v-for="model in selectableModels" :key="model.modelId" :value="model.modelId">{{ model.displayName }}</option></select></label></div><div class="draft-params"><span v-for="(value, key) in templateParameters" :key="key" class="param-chip"><b>{{ key }}</b>{{ value === null ? '未设置' : value }}</span></div><div class="draft-card__actions"><button class="button button--quiet" type="button" @click="draft = null">重新编辑</button><button class="button button--primary" type="button" :disabled="taskBusy" @click="launchTask"><LoaderCircle v-if="taskBusy" class="spin" :size="15" />确认并创建任务 <ArrowRight v-if="!taskBusy" :size="15" /></button></div></div><div v-else class="suggestions"><span>试试这些目标</span><button type="button" @click="chatText = '生成项目文档，包含源码结构和关键入口'; parseDraft()"><FileText :size="15" />项目文档</button><button type="button" @click="chatText = '生成用户操作手册，并为管理员菜单添加截图'; parseDraft()"><BookOpenCheck :size="15" />用户手册</button><button type="button" @click="chatText = '生成一个响应式 HTML 项目介绍页面'; parseDraft()"><Code2 :size="15" />HTML 页面</button><button type="button" @click="chatText = '截图管理员登录后的用户列表'; parseDraft()"><ScanLine :size="15" />自动截图</button></div></div></section></div>
 
     <div v-if="showNewProject" class="modal-layer" @click.self="showNewProject = false"><section class="modal-card"><div class="modal-card__head"><div><span class="section-head__eyebrow">PROJECT SPACE</span><h2>创建项目</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="showNewProject = false"><X :size="18" /></button></div><div v-if="errorMessage" class="config-error">{{ errorMessage }}</div><label class="field-label">项目名称<input v-model="newProjectName" autofocus placeholder="例如：Customer Portal" @keydown.enter="createProject" /></label><p class="modal-card__hint">创建后请导入 Git URL 或 ZIP 源码版本。项目与任务默认只对你可见。</p><div class="modal-card__actions"><button class="button button--quiet" type="button" @click="showNewProject = false">取消</button><button class="button button--primary" type="button" :disabled="newProjectBusy" @click="createProject"><LoaderCircle v-if="newProjectBusy" class="spin" :size="15" />创建项目</button></div></section></div>
 

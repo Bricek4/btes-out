@@ -21,6 +21,12 @@ class ArchiveSafetyTest {
     assertThrows(IllegalArgumentException.class, () -> ArchiveSafety.inspect(zip("large", "x".repeat(64)), 10, 16));
   }
 
+  @Test
+  void rejects_non_zip_uploads_even_when_the_stream_has_no_entries() {
+    assertThrows(IllegalArgumentException.class,
+        () -> ArchiveSafety.inspect("plain text".getBytes(), 10, 1024));
+  }
+
   private byte[] zip(String... parts) throws Exception {
     var output = new ByteArrayOutputStream();
     try (var zip = new ZipOutputStream(output)) {

@@ -16,13 +16,57 @@ public class TemplateController {
   private final JdbcClient jdbc; public TemplateController(JdbcClient jdbc){this.jdbc=jdbc;}
   record TemplateInput(String name,UUID skillId,Boolean publicTemplate) {}
   record VersionInput(String outputFormat,Object parameterSchema,Object formLayout,Object allowedSections,String markdownTemplate,String htmlTemplate,String css,Object validationRules) {}
-  record TemplateView(UUID id,String name,UUID skillId,String visibility,Integer latestVersion,UUID latestVersionId) {}
+  record TemplateView(UUID id,String name,UUID skillId,String taskType,String visibility,Integer latestVersion,UUID latestVersionId) {}
   record VersionView(UUID id,Integer ordinal,String outputFormat,Object parameterSchema,Object formLayout,Object allowedSections,String markdownTemplate,String htmlTemplate,String css,Object validationRules) {}
-  @GetMapping List<TemplateView> list(CurrentUser user){return jdbc.sql("SELECT t.id,t.name,t.skill_id,t.visibility,MAX(v.ordinal),(SELECT v2.id FROM template_versions v2 WHERE v2.template_id=t.id ORDER BY v2.ordinal DESC LIMIT 1) FROM templates t LEFT JOIN template_versions v ON v.template_id=t.id WHERE t.organization_id=:org AND (t.visibility='PUBLIC' OR t.owner_id=:owner) GROUP BY t.id ORDER BY t.created_at DESC").param("org",user.organizationId()).param("owner",user.id()).query((rs,n)->new TemplateView(rs.getObject(1,UUID.class),rs.getString(2),rs.getObject(3,UUID.class),rs.getString(4),(Integer)rs.getObject(5),rs.getObject(6,UUID.class))).list();}
+  @GetMapping List<TemplateView> list(CurrentUser user){return jdbc.sql("SELECT t.id,t.name,t.skill_id,s.task_type,t.visibility,MAX(v.ordinal),(SELECT v2.id FROM template_versions v2 WHERE v2.template_id=t.id ORDER BY v2.ordinal DESC LIMIT 1) FROM templates t JOIN skills s ON s.id=t.skill_id LEFT JOIN template_versions v ON v.template_id=t.id WHERE t.organization_id=:org AND (t.visibility='PUBLIC' OR t.owner_id=:owner) GROUP BY t.id,s.task_type ORDER BY t.created_at DESC").param("org",user.organizationId()).param("owner",user.id()).query((rs,n)->new TemplateView(rs.getObject(1,UUID.class),rs.getString(2),rs.getObject(3,UUID.class),rs.getString(4),rs.getString(5),(Integer)rs.getObject(6),rs.getObject(7,UUID.class))).list();}
   @GetMapping("/{templateId}/versions") List<VersionView> versions(CurrentUser user,@PathVariable UUID templateId){if(!canRead(user,templateId))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND,"TEMPLATE_NOT_FOUND");return jdbc.sql("SELECT v.id,v.ordinal,v.output_format,v.parameter_schema::text,v.form_layout::text,v.allowed_sections::text,v.markdown_template,v.html_template,v.css,v.validation_rules::text FROM template_versions v WHERE v.template_id=:id ORDER BY v.ordinal DESC").param("id",templateId).query((rs,n)->new VersionView(rs.getObject(1,UUID.class),rs.getInt(2),rs.getString(3),parseJson(rs.getString(4)),parseJson(rs.getString(5)),parseJson(rs.getString(6)),rs.getString(7),rs.getString(8),rs.getString(9),parseJson(rs.getString(10)))).list();}
-  @PostMapping @ResponseStatus(HttpStatus.CREATED) TemplateView create(CurrentUser user,@RequestBody TemplateInput r){if(r.name()==null||r.name().isBlank()||r.skillId()==null)throw new IllegalArgumentException("name and skillId are required");boolean pub=Boolean.TRUE.equals(r.publicTemplate());if(pub&&!user.admin())throw new org.springframework.security.access.AccessDeniedException("admin required");var id=UUID.randomUUID();jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,:owner,:skill,:name,:visibility,:now)").param("id",id).param("org",user.organizationId()).param("owner",pub?null:user.id()).param("skill",r.skillId()).param("name",r.name().trim()).param("visibility",pub?"PUBLIC":"PERSONAL").param("now",OffsetDateTime.now()).update();return new TemplateView(id,r.name().trim(),r.skillId(),pub?"PUBLIC":"PERSONAL",null,null);}
+  @PostMapping
+  @ResponseStatus(HttpStatus.CREATED)
+  TemplateView create(CurrentUser user, @RequestBody TemplateInput request) {
+    if (request.name() == null || request.name().isBlank() || request.skillId() == null) {
+      throw new IllegalArgumentException("name and skillId are required");
+    }
+    boolean publicTemplate = Boolean.TRUE.equals(request.publicTemplate());
+    if (publicTemplate && !user.admin()) {
+      throw new org.springframework.security.access.AccessDeniedException("admin required");
+    }
+    String taskType = skillTaskType(request.skillId());
+    UUID id = UUID.randomUUID();
+    jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,:owner,:skill,:name,:visibility,:now)")
+        .param("id", id).param("org", user.organizationId()).param("owner", publicTemplate ? null : user.id())
+        .param("skill", request.skillId()).param("name", request.name().trim())
+        .param("visibility", publicTemplate ? "PUBLIC" : "PERSONAL").param("now", OffsetDateTime.now()).update();
+    return new TemplateView(id, request.name().trim(), request.skillId(), taskType,
+        publicTemplate ? "PUBLIC" : "PERSONAL", null, null);
+  }
   @PostMapping("/{templateId}/versions") @ResponseStatus(HttpStatus.CREATED) Map<String,Object> version(CurrentUser user,@PathVariable UUID templateId,@RequestBody VersionInput r){if(!canEdit(user,templateId))throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND,"TEMPLATE_NOT_FOUND");rejectScript(r.htmlTemplate());var ordinal=jdbc.sql("SELECT COALESCE(MAX(ordinal),0)+1 FROM template_versions WHERE template_id=:id").param("id",templateId).query(Integer.class).single();var id=UUID.randomUUID();jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,:ordinal,:format,CAST(:schema AS jsonb),CAST(:layout AS jsonb),CAST(:sections AS jsonb),:markdown,:html,:css,CAST(:rules AS jsonb),:user,:now)").param("id",id).param("template",templateId).param("ordinal",ordinal).param("format",required(r.outputFormat(),"outputFormat")).param("schema",json(r.parameterSchema())).param("layout",json(r.formLayout())).param("sections",json(r.allowedSections())).param("markdown",r.markdownTemplate()).param("html",r.htmlTemplate()).param("css",r.css()).param("rules",json(r.validationRules())).param("user",user.id()).param("now",OffsetDateTime.now()).update();return Map.of("id",id,"ordinal",ordinal);}
-  @PostMapping("/{templateId}/copy") @ResponseStatus(HttpStatus.CREATED) @org.springframework.transaction.annotation.Transactional TemplateView copy(CurrentUser user,@PathVariable UUID templateId){var source=jdbc.sql("SELECT t.skill_id,t.name,v.output_format,v.parameter_schema::text,v.form_layout::text,v.allowed_sections::text,v.markdown_template,v.html_template,v.css,v.validation_rules::text FROM templates t JOIN template_versions v ON v.template_id=t.id WHERE t.id=:id AND t.organization_id=:org AND t.visibility='PUBLIC' ORDER BY v.ordinal DESC LIMIT 1").param("id",templateId).param("org",user.organizationId()).query((rs,n)->new Object[]{rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7),rs.getString(8),rs.getString(9),rs.getString(10)}).optional().orElseThrow(()->new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND,"TEMPLATE_NOT_FOUND"));var id=UUID.randomUUID();var now=OffsetDateTime.now();var versionId=UUID.randomUUID();jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,:owner,:skill,:name,'PERSONAL',:now)").param("id",id).param("org",user.organizationId()).param("owner",user.id()).param("skill",source[0]).param("name",source[1]+" copy").param("now",now).update();jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,:format,CAST(:schema AS jsonb),CAST(:layout AS jsonb),CAST(:sections AS jsonb),:markdown,:html,:css,CAST(:rules AS jsonb),:user,:now)").param("id",versionId).param("template",id).param("format",source[2]).param("schema",source[3]).param("layout",source[4]).param("sections",source[5]).param("markdown",source[6]).param("html",source[7]).param("css",source[8]).param("rules",source[9]).param("user",user.id()).param("now",now).update();return new TemplateView(id,(String)source[1]+" copy",(UUID)source[0],"PERSONAL",1,versionId);}
+  @PostMapping("/{templateId}/copy")
+  @ResponseStatus(HttpStatus.CREATED)
+  @org.springframework.transaction.annotation.Transactional
+  TemplateView copy(CurrentUser user, @PathVariable UUID templateId) {
+    var source = jdbc.sql("SELECT t.skill_id,s.task_type,t.name,v.output_format,v.parameter_schema::text,v.form_layout::text,v.allowed_sections::text,v.markdown_template,v.html_template,v.css,v.validation_rules::text FROM templates t JOIN skills s ON s.id=t.skill_id JOIN template_versions v ON v.template_id=t.id WHERE t.id=:id AND t.organization_id=:org AND t.visibility='PUBLIC' ORDER BY v.ordinal DESC LIMIT 1")
+        .param("id", templateId).param("org", user.organizationId())
+        .query((rs, n) -> new Object[] { rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3),
+            rs.getString(4), rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
+            rs.getString(9), rs.getString(10), rs.getString(11) })
+        .optional().orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND, "TEMPLATE_NOT_FOUND"));
+    UUID id = UUID.randomUUID();
+    OffsetDateTime now = OffsetDateTime.now();
+    UUID versionId = UUID.randomUUID();
+    jdbc.sql("INSERT INTO templates(id,organization_id,owner_id,skill_id,name,visibility,created_at) VALUES(:id,:org,:owner,:skill,:name,'PERSONAL',:now)")
+        .param("id", id).param("org", user.organizationId()).param("owner", user.id()).param("skill", source[0])
+        .param("name", source[2] + " copy").param("now", now).update();
+    jdbc.sql("INSERT INTO template_versions(id,template_id,ordinal,output_format,parameter_schema,form_layout,allowed_sections,markdown_template,html_template,css,validation_rules,created_by,created_at) VALUES(:id,:template,1,:format,CAST(:schema AS jsonb),CAST(:layout AS jsonb),CAST(:sections AS jsonb),:markdown,:html,:css,CAST(:rules AS jsonb),:user,:now)")
+        .param("id", versionId).param("template", id).param("format", source[3]).param("schema", source[4])
+        .param("layout", source[5]).param("sections", source[6]).param("markdown", source[7]).param("html", source[8])
+        .param("css", source[9]).param("rules", source[10]).param("user", user.id()).param("now", now).update();
+    return new TemplateView(id, (String) source[2] + " copy", (UUID) source[0], (String) source[1], "PERSONAL", 1, versionId);
+  }
+  private String skillTaskType(UUID skillId) {
+    return jdbc.sql("SELECT task_type FROM skills WHERE id=:id AND active=true")
+        .param("id", skillId).query(String.class).optional()
+        .orElseThrow(() -> new IllegalArgumentException("skill is not available"));
+  }
   private boolean canEdit(CurrentUser u,UUID id){return jdbc.sql("SELECT EXISTS(SELECT 1 FROM templates WHERE id=:id AND (owner_id=:owner OR (visibility='PUBLIC' AND :admin)))").param("id",id).param("owner",u.id()).param("admin",u.admin()).query(Boolean.class).single();}
   private boolean canRead(CurrentUser u,UUID id){return jdbc.sql("SELECT EXISTS(SELECT 1 FROM templates WHERE id=:id AND organization_id=:org AND (visibility='PUBLIC' OR owner_id=:owner))").param("id",id).param("org",u.organizationId()).param("owner",u.id()).query(Boolean.class).single();}
   private static void rejectScript(String html){if(html!=null&&html.toLowerCase(java.util.Locale.ROOT).contains("<script"))throw new IllegalArgumentException("template JavaScript is not allowed");}

@@ -30,7 +30,8 @@ public final class ChatDraftParser {
     if (message.length() > MAX_MESSAGE_CHARS) throw new IllegalArgumentException("message is too large");
     if (model != null) return parseModelDraft(message);
     String normalized = message.toLowerCase(Locale.ROOT);
-    TaskType type = normalized.contains("screenshot") || normalized.contains("screen shot") ? TaskType.SCREENSHOT
+    TaskType type = normalized.contains("用户手册") || normalized.contains("操作手册") || normalized.contains("手册") ? TaskType.USER_GUIDE
+        : normalized.contains("screenshot") || normalized.contains("screen shot") || normalized.contains("截图") ? TaskType.SCREENSHOT
         : normalized.contains("html") || normalized.contains("web page") ? TaskType.HTML
         : normalized.contains("guide") || normalized.contains("how to") ? TaskType.USER_GUIDE : TaskType.PROJECT_DOCS;
     Map<String, String> parameters = new LinkedHashMap<>();

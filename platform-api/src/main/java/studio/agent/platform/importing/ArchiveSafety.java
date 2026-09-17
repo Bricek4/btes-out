@@ -11,6 +11,7 @@ public final class ArchiveSafety {
 
   public static Inspection inspect(byte[] archive, int maxEntries, long maxExpandedBytes) {
     if (archive == null || archive.length == 0) throw new IllegalArgumentException("ZIP archive is required");
+    if (!hasZipSignature(archive)) throw new IllegalArgumentException("ZIP archive is invalid");
     int entries = 0; long expanded = 0;
     try (var zip = new ZipInputStream(new ByteArrayInputStream(archive))) {
       for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
@@ -28,5 +29,12 @@ public final class ArchiveSafety {
       }
       return new Inspection(entries, expanded);
     } catch (IOException exception) { throw new IllegalArgumentException("ZIP archive is invalid", exception); }
+  }
+
+  private static boolean hasZipSignature(byte[] archive) {
+    if (archive.length < 4 || archive[0] != 'P' || archive[1] != 'K') return false;
+    return (archive[2] == 3 && archive[3] == 4)
+        || (archive[2] == 5 && archive[3] == 6)
+        || (archive[2] == 7 && archive[3] == 8);
   }
 }

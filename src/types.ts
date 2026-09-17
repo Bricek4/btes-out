@@ -51,6 +51,7 @@ export interface Template {
   id: string
   name: string
   skillId: string
+  taskType: TaskType
   visibility: 'PUBLIC' | 'PERSONAL'
   latestVersion?: number | null
   latestVersionId?: string | null
