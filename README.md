@@ -633,37 +633,6 @@ git diff --check
 - 同一任务中的每个截图标记必须有唯一 id。
 - 如果目标页面发生变化，更新模板版本，不要修改已经执行过的历史任务。
 
-## 毕设与简历展示
-
-### 现场演示脚本
-
-建议把演示控制在 3–5 分钟：
-
-1. 展示工作台和四类工作流入口。
-2. 创建项目并导入 ZIP，说明 revision 和 SHA-256。
-3. 打开模板库，演示公共模板复制和可视化字段编辑。
-4. 创建“用户手册 + 管理员页面截图”任务，展示动态参数和登录档案。
-5. 观察任务事件从 QUEUED 到 RUNNING，中途触发一次人工确认。
-6. 打开产物树，预览 Markdown/HTML，查看截图版本和校验摘要。
-7. 以共享成员身份查看被分享产物，说明默认私有 ACL。
-8. 最后展示 Temporal、Browser Worker 和对象存储的服务边界。
-
-### 简历项目描述
-
-可以根据实际完成范围使用下面这段描述：
-
-> Agent Studio｜Java 21 微服务 AI 工作流平台
-> 设计并实现面向代码项目交付的自托管工作台，使用 Spring Boot、PostgreSQL、Temporal、LangGraph4j、Spring AI、Playwright Java、Vue 3 和 MinIO/S3，支持 Git/ZIP 导入、可版本化模板、动态参数表单、Markdown/HTML 生成、声明式多登录态截图、人工审批和产物校验分享；通过 owner/share ACL、归档安全校验、凭证加密、Worker Token 和 Temporal 脱敏边界保障任务数据安全。
-
-面试时应重点说明：
-
-- 为什么把“业务事实”放在 Platform API，把“长任务状态”放在 Temporal。
-- 为什么截图用语义 locator、route/menu path，而不是 CSS 坐标硬编码。
-- 如何保证重复提交不会产生重复任务。
-- 如何限制模型输出结构，避免任意 HTML/脚本进入产物。
-- 如何让 Provider 和登录凭证只在任务需要时短暂解密。
-- 如何从 ZIP 文件头、目录穿越、展开大小和 Nginx multipart 限制解释一次真实故障。
-
 ## 许可证
 
 本项目使用 MIT License，详见 LICENSE。
