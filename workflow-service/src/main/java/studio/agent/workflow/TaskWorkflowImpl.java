@@ -210,7 +210,7 @@ public final class TaskWorkflowImpl implements TaskWorkflow {
     while (cause != null) {
       if (cause instanceof ApplicationFailure application) {
         String type = application.getType();
-        if (type != null && !type.isBlank()) return type;
+        if (type != null && type.matches("[A-Z][A-Z0-9_]{2,63}")) return type;
       }
       cause = cause.getCause();
     }

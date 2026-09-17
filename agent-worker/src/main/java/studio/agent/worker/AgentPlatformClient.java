@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -20,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /** Agent-scoped Platform API client. Presigned object URLs never receive worker authorization. */
 public final class AgentPlatformClient implements AgentPlatformGateway {
-  private static final int MAX_SOURCE_BYTES = 20_000_000;
+  private static final int MAX_SOURCE_BYTES = 100_000_000;
   private static final int MAX_ARTIFACT_BYTES = 20_000_000;
   private static final int MAX_MANIFEST_BYTES = 1_000_000;
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -101,6 +102,123 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
     } catch (RuntimeException failure) {
       throw new PlatformOperationException("SOURCE_FETCH_FAILED");
     }
+  }
+
+  @Override public SourceReadCheckpoint sourceReadCheckpoint(UUID taskId, SourceReadPlan plan) {
+    Objects.requireNonNull(taskId, "task id is required");
+    Objects.requireNonNull(plan, "source read plan is required");
+    try {
+      Map<?, ?> response = platform.post().uri("/internal/tasks/{taskId}/source-read/runs", taskId)
+          .header(HttpHeaders.AUTHORIZATION, bearer()).contentType(MediaType.APPLICATION_JSON)
+          .body(Map.of("revisionSha256", plan.archiveSha256(), "scope", "PROJECT_SOURCE",
+              "totalEntries", plan.totalEntries()))
+          .retrieve().body(Map.class);
+      UUID runId = uuid(response == null ? Map.of() : response, "runId");
+      String base = "/internal/tasks/" + taskId + "/source-read/runs/" + runId;
+      for (SourceReadFile file : plan.files()) {
+        var payload = new java.util.LinkedHashMap<String, Object>();
+        payload.put("path", file.path());
+        payload.put("category", file.category().name());
+        payload.put("sizeBytes", file.sizeBytes());
+        payload.put("sha256", file.sha256());
+        payload.put("chunkCount", file.chunks().size());
+        payload.put("status", file.status().name());
+        if (file.skipReason() != null) payload.put("skipReason", file.skipReason());
+        postInternal(base + "/files", payload);
+        for (int start = 0; start < file.chunks().size(); start += 64) {
+          var chunks = new java.util.ArrayList<Map<String, Object>>();
+          for (SourceReadChunk chunk : file.chunks().subList(start, Math.min(start + 64, file.chunks().size()))) {
+            chunks.add(Map.of("chunkId", chunk.chunkId(), "filePath", chunk.filePath(), "ordinal", chunk.ordinal(),
+                "startOffset", chunk.startOffset(), "endOffset", chunk.endOffset(), "chunkSha256", chunk.sha256()));
+          }
+          postInternal(base + "/chunks", Map.of("chunks", chunks));
+        }
+      }
+      Map<?, ?> coverage = platform.get().uri(base + "/coverage")
+          .header(HttpHeaders.AUTHORIZATION, bearer()).retrieve().body(Map.class);
+      var completed = new java.util.LinkedHashMap<String, String>();
+      int offset = 0;
+      while (true) {
+        Map<?, ?> page = platform.get().uri(base + "/summaries?offset={offset}&limit=200", offset)
+            .header(HttpHeaders.AUTHORIZATION, bearer()).retrieve().body(Map.class);
+        Object items = page == null ? null : page.get("items");
+        if (items instanceof List<?> values) {
+          for (Object item : values) {
+            if (!(item instanceof Map<?, ?> row)) continue;
+            String id = value(row, "chunkId");
+            Object summary = row.get("summary");
+            if (id != null && summary != null) completed.put(id, JSON.writeValueAsString(summary));
+          }
+          if (values.size() < 200) break;
+          offset += values.size();
+        } else break;
+      }
+      Object completedIds = coverage == null ? null : coverage.get("completedChunkIds");
+      if (completedIds instanceof List<?> ids) {
+        for (Object id : ids) completed.putIfAbsent(String.valueOf(id), "{\"facts\":[]}");
+      }
+      return new HttpSourceReadCheckpoint(this, taskId, runId, completed);
+    } catch (RuntimeException failure) {
+      if (failure instanceof PlatformOperationException platformFailure) throw platformFailure;
+      throw new PlatformOperationException("SOURCE_READ_CHECKPOINT_UNAVAILABLE");
+    }
+  }
+
+  @Override public void reportReadProgress(UUID taskId, SourceReadProgress progress) {
+    if (progress == null) return;
+    var body = new java.util.LinkedHashMap<String, Object>();
+    body.put("status", "RUNNING");
+    body.put("progress", progress.totalChunks() == 0 ? 0
+        : Math.min(99, (progress.completedOrFailedChunks() * 100) / progress.totalChunks()));
+    body.put("message", "正在分析：" + progress.filePath() + " · 分块 " + progress.chunkOrdinal());
+    body.put("details", "{\"stage\":\"SOURCE_READ\"}");
+    try {
+      platform.post().uri("/internal/tasks/{taskId}/events", taskId).header(HttpHeaders.AUTHORIZATION, bearer())
+          .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().toBodilessEntity();
+    } catch (RuntimeException failure) {
+      throw new PlatformOperationException("SOURCE_READ_PROGRESS_UNAVAILABLE");
+    }
+  }
+
+  private void postInternal(String path, Object body) {
+    platform.post().uri(path).header(HttpHeaders.AUTHORIZATION, bearer())
+        .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().toBodilessEntity();
+  }
+
+  private static final class HttpSourceReadCheckpoint implements SourceReadCheckpoint {
+    private final AgentPlatformClient client;
+    private final UUID taskId;
+    private final UUID runId;
+    private final java.util.concurrent.ConcurrentMap<String, String> completed;
+
+    private HttpSourceReadCheckpoint(AgentPlatformClient client, UUID taskId, UUID runId,
+        Map<String, String> completed) {
+      this.client = client; this.taskId = taskId; this.runId = runId;
+      this.completed = new java.util.concurrent.ConcurrentHashMap<>(completed);
+    }
+
+    @Override public Map<String, String> completed() { return Map.copyOf(completed); }
+
+    @Override public void retry(SourceReadChunk chunk) {
+      client.postInternal(base() + "/chunks/" + chunk.chunkId() + "/retry", Map.of());
+    }
+
+    @Override public void complete(SourceReadChunk chunk, String summary) {
+      client.postInternal(base() + "/chunks/" + chunk.chunkId() + "/complete",
+          Map.of("status", "ANALYZED", "summary", summary));
+      completed.put(chunk.chunkId(), summary);
+    }
+
+    @Override public void fail(SourceReadChunk chunk, String code) {
+      client.postInternal(base() + "/chunks/" + chunk.chunkId() + "/complete",
+          Map.of("status", "FAILED", "failureCode", code));
+    }
+
+    @Override public void finish(SourceReadStatus status, String failureCode) {
+      client.postInternal(base() + "/complete", Map.of("status", status == SourceReadStatus.ANALYZED ? "COMPLETE" : "FAILED"));
+    }
+
+    private String base() { return "/internal/tasks/" + taskId + "/source-read/runs/" + runId; }
   }
 
   @Override public PublishedArtifact publish(UUID taskId, ArtifactUpload upload) {
@@ -230,14 +348,14 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
   }
 
   public enum ArtifactKind {
-    DOC("docs"), HTML("site"), MANIFEST("manifests");
+    DOC("docs"), HTML("site"), MANIFEST("manifests"), DIAGRAM("diagrams");
     private final String referenceSegment;
     ArtifactKind(String referenceSegment) { this.referenceSegment = referenceSegment; }
   }
 
   public record ArtifactUpload(String name, ArtifactKind kind, String mediaType, byte[] bytes, String manifest) {
     public ArtifactUpload {
-      if (kind == null) throw new IllegalArgumentException("Agent artifact kind must be DOC, HTML or MANIFEST");
+      if (kind == null) throw new IllegalArgumentException("Agent artifact kind must be DOC, HTML, MANIFEST or DIAGRAM");
       if (name == null || name.isBlank() || name.startsWith("/") || name.contains("\\")
           || java.util.Arrays.asList(name.split("/")).contains("..") || name.length() > 240) {
         throw new IllegalArgumentException("artifact name is invalid");
@@ -246,6 +364,7 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
         case DOC -> "text/markdown";
         case HTML -> "text/html";
         case MANIFEST -> "application/json";
+        case DIAGRAM -> "image/svg+xml";
       };
       MediaType actual;
       try { actual = MediaType.parseMediaType(requireText(mediaType, "artifact media type is required")); }
@@ -285,6 +404,10 @@ interface AgentPlatformGateway {
   ProviderConnection provider(UUID taskId);
   byte[] fetchSource(URI sourceUrl);
   AgentPlatformClient.PublishedArtifact publish(UUID taskId, AgentPlatformClient.ArtifactUpload upload);
+  default SourceReadCheckpoint sourceReadCheckpoint(UUID taskId, SourceReadPlan plan) {
+    return SourceReadCheckpoint.inMemory();
+  }
+  default void reportReadProgress(UUID taskId, SourceReadProgress progress) { }
 }
 
 record AgentTemplateContext(UUID versionId, String format, String markdown, String html,

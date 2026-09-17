@@ -1,7 +1,7 @@
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /src
 COPY . .
-RUN ./mvnw -pl agent-worker -am -DskipTests package
+RUN mvn -pl agent-worker -am -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

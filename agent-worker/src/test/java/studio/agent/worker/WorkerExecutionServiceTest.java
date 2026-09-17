@@ -33,10 +33,15 @@ class WorkerExecutionServiceTest {
 
     assertEquals(TaskStatus.SUCCEEDED, result.completion().status());
     assertEquals("artifact://docs/" + platform.primaryArtifactId, result.artifactReference());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.DOC),
-        platform.publishedKinds);
-    assertTrue(platform.uploads.get(1).name().startsWith("docs/"));
-    assertTrue(new String(platform.uploads.get(1).bytes(), StandardCharsets.UTF_8).contains("GET /users"));
+    assertTrue(platform.publishedKinds.size() >= 12);
+    assertTrue(platform.publishedKinds.contains(AgentPlatformClient.ArtifactKind.DIAGRAM));
+    assertTrue(platform.publishedKinds.stream().filter(kind -> kind == AgentPlatformClient.ArtifactKind.DOC).count() >= 7);
+    assertTrue(platform.uploads.stream().anyMatch(upload -> upload.name().equals("docs/api.md")));
+    assertTrue(platform.uploads.stream().anyMatch(upload -> upload.name().equals("docs/03-system-architecture.md")));
+    assertTrue(platform.uploads.stream().anyMatch(upload -> upload.name().equals("manifests/source-read-coverage.json")));
+    assertTrue(platform.uploads.stream().filter(upload -> upload.kind() == AgentPlatformClient.ArtifactKind.DOC)
+        .map(upload -> new String(upload.bytes(), StandardCharsets.UTF_8))
+        .anyMatch(content -> content.contains("GET /users") || content.contains("source evidence")));
   }
 
   @Test void accepts_a_realistic_archive_with_more_than_five_hundred_entries() throws Exception {
@@ -63,9 +68,10 @@ class WorkerExecutionServiceTest {
     var result = service.execute(request(taskId, TaskType.HTML));
 
     assertEquals(TaskStatus.SUCCEEDED, result.completion().status());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.HTML),
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST,
+        AgentPlatformClient.ArtifactKind.HTML),
         platform.publishedKinds);
-    String html = new String(platform.uploads.get(1).bytes(), StandardCharsets.UTF_8);
+    String html = new String(platform.uploads.get(2).bytes(), StandardCharsets.UTF_8);
     assertTrue(html.contains("<html"));
     assertTrue(html.contains("viewport"));
     assertFalse(html.contains("<script"));
@@ -83,7 +89,8 @@ class WorkerExecutionServiceTest {
 
     assertEquals(TaskStatus.SUCCEEDED, result.completion().status());
     assertEquals("artifact://" + taskId + "/users/users.png", result.artifactReference());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST,
+        AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
     assertTrue(new String(platform.uploads.getLast().bytes(), StandardCharsets.UTF_8)
         .contains("artifact://" + taskId + "/users/users.png"));
     assertNull(result.approvalRequest());
@@ -103,12 +110,13 @@ class WorkerExecutionServiceTest {
     assertEquals("users", result.approvalRequest().markerId());
     assertTrue(result.approvalRequest().reference().matches(
         "approval://screenshot-route/users/[0-9a-f]{64}"));
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
 
     var approved = service.execute(request(taskId, TaskType.SCREENSHOT), result.approvalRequest().reference());
     assertEquals(TaskStatus.SUCCEEDED, approved.completion().status());
     assertEquals("artifact://" + taskId + "/users/users.png", approved.artifactReference());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST,
+        AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
   }
 
   @Test void neverAppliesAnApprovalToRegeneratedContent() {
@@ -118,8 +126,10 @@ class WorkerExecutionServiceTest {
     var platform = new RecordingPlatform(context(taskId, TaskType.USER_GUIDE, parameters,
         "https://fixture.test"), "unrelated route");
     var completions = new java.util.concurrent.atomic.AtomicInteger();
-    var service = new WorkerExecutionService(platform, new RecordingBrowser(), provider -> prompt ->
-        completions.getAndIncrement() == 0 ? "# First\n" + MARKER : "# Changed without markers");
+    var service = new WorkerExecutionService(platform, new RecordingBrowser(), provider -> prompt -> {
+      if (prompt.startsWith("Analyze source chunk")) return "{\"facts\":[]}";
+      return completions.getAndIncrement() == 0 ? "# First\n" + MARKER : "# Changed without markers";
+    });
 
     var first = service.execute(request(taskId, TaskType.USER_GUIDE));
     assertNotNull(first.approvalRequest());
@@ -127,7 +137,7 @@ class WorkerExecutionServiceTest {
 
     assertEquals(TaskStatus.FAILED, retried.completion().status());
     assertEquals("APPROVED_CANDIDATE_CHANGED", retried.completion().failureCode());
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
   }
 
   @Test void reusesACompletedExecutionWithoutRegeneratingOrRecapturing() {
@@ -144,7 +154,8 @@ class WorkerExecutionServiceTest {
 
     assertSame(first, repeated);
     assertEquals(1, browser.screenshots);
-    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
+    assertEquals(List.of(AgentPlatformClient.ArtifactKind.MANIFEST, AgentPlatformClient.ArtifactKind.MANIFEST,
+        AgentPlatformClient.ArtifactKind.MANIFEST), platform.publishedKinds);
   }
 
   private static WorkerTaskRequest request(UUID taskId, TaskType type) {
@@ -202,7 +213,7 @@ class WorkerExecutionServiceTest {
       uploads.add(upload);
       UUID id = upload.kind() != AgentPlatformClient.ArtifactKind.MANIFEST && published++ == 0
           ? primaryArtifactId : UUID.randomUUID();
-      String segment = switch (upload.kind()) { case DOC -> "docs"; case HTML -> "site"; case MANIFEST -> "manifests"; };
+      String segment = switch (upload.kind()) { case DOC -> "docs"; case HTML -> "site"; case MANIFEST -> "manifests"; case DIAGRAM -> "diagrams"; };
       var result = new AgentPlatformClient.PublishedArtifact(id, UUID.randomUUID(),
           "artifact://" + segment + "/" + id, "sha");
       publishedByKey.put(key, result);

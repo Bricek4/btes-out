@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowOptions;
 import io.temporal.client.WorkflowStub;
+import io.temporal.failure.ApplicationFailure;
 import io.temporal.testing.TestWorkflowEnvironment;
 import io.temporal.worker.Worker;
 import java.time.Duration;
@@ -174,6 +175,19 @@ class TaskWorkflowTest {
         new TaskWorkflowResult("cancel-during-activity", TaskStatus.CANCELED, null, "CANCELED_BY_USER"));
   }
 
+  @Test
+  void normalizes_non_machine_activity_failure_types_before_completing_workflow() throws Exception {
+    var workflow = newWorkflow("invalid-activity-code");
+    activities.failure = ApplicationFailure.newFailure("provider failure", "provider detail");
+    WorkflowClient.start(workflow::run, input("invalid-activity-code", false));
+
+    TaskWorkflowResult result = WorkflowStub.fromTyped(workflow)
+        .getResultAsync(TaskWorkflowResult.class).get(5, TimeUnit.SECONDS);
+
+    assertThat(result.status()).isEqualTo(TaskStatus.FAILED);
+    assertThat(result.failureCode()).isEqualTo("AGENT_ACTIVITY_FAILED");
+  }
+
   private TaskWorkflow newWorkflow(String id) {
     return client.newWorkflowStub(TaskWorkflow.class,
         WorkflowOptions.newBuilder().setWorkflowId("task-" + id).setTaskQueue(TASK_QUEUE).build());
@@ -200,6 +214,7 @@ class TaskWorkflowTest {
   static final class DeterministicActivities implements TaskActivities {
     private volatile boolean block;
     private volatile boolean approvalOnFirst;
+    private volatile RuntimeException failure;
     private int calls;
     private String lastApprovedReference;
     private final CountDownLatch entered = new CountDownLatch(1);
@@ -209,6 +224,7 @@ class TaskWorkflowTest {
     public ActivityOutcome execute(WorkflowInput input) {
       calls++;
       lastApprovedReference = input.approvedReference();
+      if (failure != null) throw failure;
       if (approvalOnFirst && calls == 1) {
         return new ActivityOutcome(TaskStatus.WAITING_FOR_APPROVAL, null, null,
         new TaskApprovalRequest("SCREENSHOT_ROUTE_AMBIGUITY", "users",

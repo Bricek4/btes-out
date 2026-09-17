@@ -74,12 +74,16 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     try {
       AgentTaskContext context = platform.context(request.taskId());
       if (!request.taskId().equals(context.taskId())) throw new PipelineFailure("AGENT_CONTEXT_TASK_MISMATCH");
-      String evidence = sourceEvidence(platform.fetchSource(context.sourceUrl()));
+      ReadContext read = readSource(request, context);
+      publishReadCoverage(request, read.result());
       return request.type() == TaskType.SCREENSHOT
-          ? executeScreenshot(request, context, evidence, approvedReference)
-          : executeGenerated(request, context, evidence, approvedReference);
+          ? executeScreenshot(request, context, read.result().sourceText(), approvedReference)
+          : executeGenerated(request, context, read.result(), read.synthesisContext(), approvedReference,
+              read.model(), read.provider());
     } catch (PipelineFailure failure) {
       return failed(request.taskId(), failure.code);
+    } catch (SourceReadException failure) {
+      return failed(request.taskId(), failure.code());
     } catch (AgentPlatformClient.PlatformOperationException failure) {
       return failed(request.taskId(), safeCode(failure.getMessage(), "PLATFORM_OPERATION_FAILED"));
     } catch (SpringAiModelGateway.ModelCallFailure failure) {
@@ -94,8 +98,42 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     }
   }
 
+  private ReadContext readSource(WorkerTaskRequest request, AgentTaskContext context) {
+    byte[] source = platform.fetchSource(context.sourceUrl());
+    SourceReadPlan plan = isZip(source) ? SourceReadPlanner.plan(source)
+        : SourceReadPlanner.planText("source.txt", source);
+    if (plan.totalChunks() == 0) throw new SourceReadException("SOURCE_EVIDENCE_EMPTY");
+    SourceReadCheckpoint checkpoint = platform.sourceReadCheckpoint(request.taskId(), plan);
+    ProviderConnection provider = platform.provider(request.taskId());
+    if (!context.modelId().equals(provider.model())) throw new PipelineFailure("PROVIDER_MODEL_MISMATCH");
+    var model = models.apply(provider);
+    var limitedModel = SourceReadLimiter.shared().wrap(model);
+    var analyzer = new SourceReadAnalyzer(model, checkpoint,
+        progress -> platform.reportReadProgress(request.taskId(), progress));
+    SourceReadResult result = analyzer.analyze(plan);
+    if (!result.complete()) {
+      checkpoint.finish(SourceReadStatus.FAILED, "SOURCE_READ_INCOMPLETE");
+      throw new SourceReadException("SOURCE_READ_INCOMPLETE");
+    }
+    checkpoint.finish(SourceReadStatus.ANALYZED, null);
+    return new ReadContext(result, provider, limitedModel, SourceReadReducer.reduce(result, limitedModel));
+  }
+
+  private static boolean isZip(byte[] source) {
+    return source != null && source.length >= 4 && source[0] == 'P' && source[1] == 'K'
+        && source[2] == 3 && source[3] == 4;
+  }
+
+  private void publishReadCoverage(WorkerTaskRequest request, SourceReadResult read) {
+    String coverage = read.coverageJson(request.taskId());
+    platform.publish(request.taskId(), new AgentPlatformClient.ArtifactUpload(
+        "manifests/source-read-coverage.json", AgentPlatformClient.ArtifactKind.MANIFEST,
+        "application/json", coverage.getBytes(StandardCharsets.UTF_8), "{}"));
+  }
+
   private LocalWorkerResult executeGenerated(WorkerTaskRequest request, AgentTaskContext context,
-      String evidence, String approvedReference) {
+      SourceReadResult read, String evidence, String approvedReference,
+      ArtifactGenerationService.ModelGateway model, ProviderConnection provider) {
     AgentTemplateContext template = context.template();
     Map<String, Object> parameters = context.parameters();
     String outputPath = text(parameters, "outputPath", switch (request.type()) {
@@ -107,9 +145,13 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     String outputFormat = request.type() == TaskType.HTML ? "html" : "markdown";
     String templateBody = request.type() == TaskType.HTML ? template.html() : template.markdown();
     if (templateBody == null || templateBody.isBlank()) throw new PipelineFailure("TEMPLATE_BODY_UNAVAILABLE");
-    ProviderConnection provider = platform.provider(request.taskId());
-    if (!context.modelId().equals(provider.model())) throw new PipelineFailure("PROVIDER_MODEL_MISMATCH");
-    var generation = new ArtifactGenerationService(models.apply(provider));
+    if (!context.modelId().equals(provider.model())) {
+      throw new PipelineFailure("PROVIDER_MODEL_MISMATCH");
+    }
+    if (request.type() == TaskType.PROJECT_DOCS) {
+      return executeDocumentPackage(request, context, read, evidence, approvedReference, model);
+    }
+    var generation = new ArtifactGenerationService(model);
     var generated = generation.generate(new ArtifactGenerationService.GenerationRequest(request.type(), evidence,
         outputPath, outputFormat, templateBody, text(parameters, "title", "Generated project artifact"),
         parameters, text(parameters, "sourceChangeSummary", ""), text(parameters, "existingContent", ""),
@@ -118,7 +160,7 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     ResolutionOutcome approvalCheck = validateApprovedCandidate(generated.content(), approvedReference);
     if (approvalCheck != null) return failed(request.taskId(), approvalCheck.failureCode());
     publishManifest(request, manifest(request, generated.path(), generated.content()));
-    ResolutionOutcome resolved = resolveMarkers(request.taskId(), context, evidence, generated.content(), approvedReference);
+    ResolutionOutcome resolved = resolveMarkers(request.taskId(), context, read.sourceText(), generated.content(), approvedReference);
     if (resolved.approval() != null) {
       return new LocalWorkerResult(null, null, resolved.approval());
     }
@@ -132,6 +174,48 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     AgentPlatformClient.PublishedArtifact primary = platform.publish(request.taskId(),
         new AgentPlatformClient.ArtifactUpload(generated.path(), kind, mediaType, content, manifest));
     return succeeded(request.taskId(), primary.reference());
+  }
+
+  private LocalWorkerResult executeDocumentPackage(WorkerTaskRequest request, AgentTaskContext context,
+      SourceReadResult read, String synthesisContext, String approvedReference,
+      ArtifactGenerationService.ModelGateway model) {
+    var generationRequest = new ArtifactGenerationService.GenerationRequest(TaskType.PROJECT_DOCS, "",
+        text(context.parameters(), "outputPath", "docs/README.md"), "markdown", context.template().markdown(),
+        text(context.parameters(), "title", "项目架构文档"), context.parameters(),
+        text(context.parameters(), "sourceChangeSummary", ""), text(context.parameters(), "existingContent", ""),
+        context.loginProfileReferences(), stringSet(context.parameters().get("availableAssets")),
+        Boolean.TRUE.equals(context.parameters().get("incremental")));
+    DocumentPackage documentPackage = DocumentPackageGenerator.generate(generationRequest, read, model, synthesisContext);
+    String boundary = "\n\n<!-- agent-studio:document-boundary -->\n\n";
+    String candidate = documentPackage.documents().stream().map(GeneratedArtifact::content)
+        .collect(java.util.stream.Collectors.joining(boundary));
+    ResolutionOutcome approvalCheck = validateApprovedCandidate(candidate, approvedReference);
+    if (approvalCheck != null) return failed(request.taskId(), approvalCheck.failureCode());
+    publishManifest(request, manifest(request, "docs/README.md", candidate));
+    ResolutionOutcome resolved = resolveMarkers(request.taskId(), context, read.sourceText(), candidate, approvedReference);
+    if (resolved.approval() != null) return new LocalWorkerResult(null, null, resolved.approval());
+    if (resolved.failureCode() != null) return failed(request.taskId(), resolved.failureCode());
+    String[] rendered = resolved.content().split(java.util.regex.Pattern.quote(boundary), -1);
+    if (rendered.length != documentPackage.documents().size()) throw new PipelineFailure("DOCUMENT_PACKAGE_SPLIT_FAILED");
+    AgentPlatformClient.PublishedArtifact root = null;
+    for (int index = 0; index < rendered.length; index++) {
+      GeneratedArtifact document = documentPackage.documents().get(index);
+      String documentManifest = manifest(request, document.path(), rendered[index]);
+      AgentPlatformClient.PublishedArtifact published = platform.publish(request.taskId(),
+          new AgentPlatformClient.ArtifactUpload(document.path(), AgentPlatformClient.ArtifactKind.DOC,
+              "text/markdown", rendered[index].getBytes(StandardCharsets.UTF_8), documentManifest));
+      if (index == 0) root = published;
+    }
+    for (DiagramArtifact diagram : documentPackage.diagrams()) {
+      platform.publish(request.taskId(), new AgentPlatformClient.ArtifactUpload(diagram.path(),
+          AgentPlatformClient.ArtifactKind.DIAGRAM, "image/svg+xml",
+          diagram.content().getBytes(StandardCharsets.UTF_8), "{}"));
+    }
+    platform.publish(request.taskId(), new AgentPlatformClient.ArtifactUpload(
+        "manifests/document-map.json", AgentPlatformClient.ArtifactKind.MANIFEST, "application/json",
+        documentPackage.documentMapJson().getBytes(StandardCharsets.UTF_8), "{}"));
+    if (root == null) throw new PipelineFailure("DOCUMENT_PACKAGE_EMPTY");
+    return succeeded(request.taskId(), root.reference());
   }
 
   private LocalWorkerResult executeScreenshot(WorkerTaskRequest request, AgentTaskContext context,
@@ -374,6 +458,9 @@ public final class WorkerExecutionService implements WorkerTaskExecutor {
     private final String code;
     PipelineFailure(String code) { super(code); this.code = code; }
   }
+
+  private record ReadContext(SourceReadResult result, ProviderConnection provider,
+                             ArtifactGenerationService.ModelGateway model, String synthesisContext) { }
 }
 
 @FunctionalInterface

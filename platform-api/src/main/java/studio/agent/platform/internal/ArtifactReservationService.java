@@ -21,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
 public class ArtifactReservationService {
   static final long MAX_ARTIFACT_BYTES = 20_000_000L;
   static final long MAX_MANIFEST_BYTES = 1_000_000L;
-  private static final Set<String> AGENT_KINDS = Set.of("DOC", "HTML", "MANIFEST");
+  private static final Set<String> AGENT_KINDS = Set.of("DOC", "HTML", "MANIFEST", "DIAGRAM");
   private static final ObjectMapper JSON = new ObjectMapper();
 
   private final JdbcClient jdbc;

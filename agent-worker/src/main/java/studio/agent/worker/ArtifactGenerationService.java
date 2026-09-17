@@ -31,8 +31,20 @@ public final class ArtifactGenerationService {
   public GeneratedArtifact generate(GenerationRequest request) {
     Objects.requireNonNull(request, "generation request is required");
     validateRequest(request);
-    String evidence = redactAndLimit(request.sourceEvidence());
-    String existing = redactAndLimit(request.existingContent());
+    return generateInternal(request, redactAndLimit(request.sourceEvidence(), MAX_EVIDENCE_CHARS),
+        redactAndLimit(request.existingContent(), MAX_EVIDENCE_CHARS));
+  }
+
+  public GeneratedArtifact generateFromSynthesis(GenerationRequest request, String synthesisContext) {
+    Objects.requireNonNull(request, "generation request is required");
+    validateRequest(request);
+    if (synthesisContext == null || synthesisContext.isBlank()) throw new SourceReadException("SOURCE_SYNTHESIS_EMPTY");
+    String evidence = redactOnly(synthesisContext);
+    if (evidence.length() > 4_000_000) throw new SourceReadException("SOURCE_SYNTHESIS_TOO_LARGE");
+    return generateInternal(request, evidence, redactAndLimit(request.existingContent(), MAX_EVIDENCE_CHARS));
+  }
+
+  private GeneratedArtifact generateInternal(GenerationRequest request, String evidence, String existing) {
     String prompt = buildPrompt(request, evidence, existing);
     String generated = model.complete(prompt);
     if (generated == null || generated.isBlank()) throw new IllegalArgumentException("model returned empty artifact");
@@ -115,10 +127,18 @@ public final class ArtifactGenerationService {
   }
 
   private static String redactAndLimit(String value) {
+    return redactAndLimit(value, MAX_EVIDENCE_CHARS);
+  }
+
+  private static String redactAndLimit(String value, int limit) {
     if (value == null) return "";
-    String redacted = SECRET_ASSIGNMENT.matcher(value).replaceAll("$1[REDACTED]");
-    if (redacted.length() > MAX_EVIDENCE_CHARS) return redacted.substring(0, MAX_EVIDENCE_CHARS) + "\n[additional evidence omitted]";
+    String redacted = redactOnly(value);
+    if (redacted.length() > limit) return redacted.substring(0, limit) + "\n[additional evidence omitted]";
     return redacted;
+  }
+
+  private static String redactOnly(String value) {
+    return SECRET_ASSIGNMENT.matcher(value == null ? "" : value).replaceAll("$1[REDACTED]");
   }
 
   private static String safeSummary(String value) { return value == null ? "" : redactAndLimit(value); }

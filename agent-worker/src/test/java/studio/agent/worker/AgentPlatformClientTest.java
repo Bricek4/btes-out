@@ -74,6 +74,9 @@ class AgentPlatformClientTest {
 
       assertThrows(IllegalArgumentException.class, () -> client.publish(taskId,
           new AgentPlatformClient.ArtifactUpload("screenshots/x.png", null, "image/png", new byte[] {1}, "{}")));
+      assertDoesNotThrow(() -> new AgentPlatformClient.ArtifactUpload(
+          "diagrams/system-overview.svg", AgentPlatformClient.ArtifactKind.DIAGRAM,
+          "image/svg+xml", "<svg/>".getBytes(StandardCharsets.UTF_8), "{}"));
     } finally {
       server.stop(0);
     }
@@ -93,6 +96,32 @@ class AgentPlatformClientTest {
       RuntimeException failure = assertThrows(RuntimeException.class, () -> client.provider(UUID.randomUUID()));
       assertEquals("PROVIDER_CREDENTIAL_UNAVAILABLE", failure.getMessage());
       assertFalse(failure.toString().contains("must-not-escape"));
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test void restores_source_read_checkpoint_summaries_after_worker_restart() throws Exception {
+    UUID taskId = UUID.randomUUID();
+    UUID runId = UUID.randomUUID();
+    List<CapturedRequest> requests = new ArrayList<>();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", exchange -> handleSourceRead(exchange, runId, requests));
+    server.start();
+    try {
+      var plan = SourceReadPlanner.planText("src/Main.java", "class Main {}\n".getBytes(StandardCharsets.UTF_8));
+      var client = new AgentPlatformClient("http://127.0.0.1:" + server.getAddress().getPort(), "agent-token");
+
+      SourceReadCheckpoint checkpoint = client.sourceReadCheckpoint(taskId, plan);
+
+      assertEquals("{\"facts\":[\"persisted\"]}", checkpoint.completed().get("done"));
+      checkpoint.complete(plan.file("src/Main.java").chunks().getFirst(), "{\"facts\":[\"new\"]}");
+      client.reportReadProgress(taskId, new SourceReadProgress(1, 10, "src/Main.java", 0));
+      assertTrue(requests.stream().anyMatch(request -> request.path().contains("/source-read/runs/" + runId + "/files")));
+      assertTrue(requests.stream().anyMatch(request -> request.path().contains("/source-read/runs/" + runId + "/chunks")));
+      assertTrue(requests.stream().anyMatch(request -> request.path().contains("/complete")));
+      CapturedRequest progress = requests.stream().filter(request -> request.path().endsWith("/events")).findFirst().orElseThrow();
+      assertEquals("正在分析：src/Main.java · 分块 0", progress.body().get("message"));
     } finally {
       server.stop(0);
     }
@@ -158,6 +187,33 @@ class AgentPlatformClientTest {
     }
     exchange.sendResponseHeaders(path.equals("/put/object") ? 200 : 200, output.length);
     exchange.getResponseBody().write(output);
+    exchange.close();
+  }
+
+  private static void handleSourceRead(HttpExchange exchange, UUID runId,
+      List<CapturedRequest> requests) throws IOException {
+    byte[] input = exchange.getRequestBody().readAllBytes();
+    String path = exchange.getRequestURI().getPath();
+    Map<String, Object> body = input.length == 0 ? Map.of() : JSON.readValue(input, STRING_OBJECT_MAP);
+    requests.add(new CapturedRequest(exchange.getRequestMethod(), path,
+        exchange.getRequestHeaders().getFirst("Authorization"), null, body));
+    String response = "";
+    int status = 204;
+    if (path.endsWith("/source-read/runs")) {
+      response = "{\"runId\":\"" + runId + "\",\"status\":\"PLANNED\"}";
+      status = 200;
+    } else if (path.endsWith("/coverage")) {
+      response = "{\"runId\":\"" + runId + "\",\"status\":\"READING\",\"completedChunkIds\":[\"done\"],\"failedChunks\":[],\"files\":[]}";
+      status = 200;
+    } else if (path.endsWith("/summaries")) {
+      response = "{\"items\":[{\"chunkId\":\"done\",\"summary\":{\"facts\":[\"persisted\"]}}],\"hasMore\":false}";
+      status = 200;
+    } else if (path.endsWith("/events")) {
+      status = 204;
+    }
+    if (!response.isEmpty()) exchange.getResponseHeaders().set("Content-Type", "application/json");
+    exchange.sendResponseHeaders(status, response.getBytes(StandardCharsets.UTF_8).length);
+    if (!response.isEmpty()) exchange.getResponseBody().write(response.getBytes(StandardCharsets.UTF_8));
     exchange.close();
   }
 

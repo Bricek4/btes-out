@@ -178,6 +178,8 @@ services:
       PLATFORM_API_URL: http://platform-api:8080
       BROWSER_WORKER_URL: http://browser-worker:8083
       AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN}
+      SOURCE_READ_MAX_IN_FLIGHT: ${SOURCE_READ_MAX_IN_FLIGHT:-100}
+      SOURCE_READ_PER_TASK_CONCURRENCY: ${SOURCE_READ_PER_TASK_CONCURRENCY:-100}
     depends_on:
       platform-api:
         condition: service_started
