@@ -35,7 +35,7 @@ const library = [
     <div class="sidebar__brand">
       <BrandMark />
       <div v-if="!collapsed" class="brand-copy">
-        <strong>Agent Studio</strong>
+        <strong>Sourcewright</strong>
         <span>workflow workspace</span>
       </div>
       <button class="icon-button sidebar__toggle" type="button" :aria-label="collapsed ? '展开侧栏' : '收起侧栏'" @click="emit('toggle')">

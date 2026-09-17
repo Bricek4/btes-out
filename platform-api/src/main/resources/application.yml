@@ -34,7 +34,7 @@ agent-studio:
   workflow-service-base-url: ${WORKFLOW_SERVICE_URL:${WORKFLOW_SERVICE_BASE_URL:http://workflow-service:8081}}
   workflow-service-token: ${WORKFLOW_SERVICE_TOKEN:}
   public-base-url: ${PUBLIC_BASE_URL:http://localhost:8088}
-  mail-from: ${MAIL_FROM:no-reply@agent-studio.local}
+  mail-from: ${MAIL_FROM:no-reply@sourcewright.local}
   object-store:
     endpoint: ${S3_ENDPOINT:}
     region: ${S3_REGION:}

@@ -38,12 +38,12 @@ final class VerificationDelivery {
   }
 
   void sendVerification(String email, String token) {
-    send(email, "Verify your Agent Studio account", "/verify-email?token=" + encode(token),
+    send(email, "Verify your Sourcewright account", "/verify-email?token=" + encode(token),
         "Use this link to verify your account. It expires in 24 hours.");
   }
 
   void sendPasswordReset(String email, String token) {
-    send(email, "Reset your Agent Studio password", "/reset-password?token=" + encode(token),
+    send(email, "Reset your Sourcewright password", "/reset-password?token=" + encode(token),
         "Use this link to choose a new password. It expires in 1 hour.");
   }
 

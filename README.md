@@ -1,8 +1,8 @@
-# Agent Studio
+# Sourcewright
 
-> 面向代码项目交付的自托管 AI 工作流平台。导入源码、选择模板、配置模型与登录态后，生成可审查的项目文档、用户手册、HTML 页面和自动化截图。
+> 把源码、自动化与可验证交付物组织为一条可追溯的工作流。
 
-Agent Studio 将源码版本、模板版本、任务状态和最终产物放进同一条可追溯的工作流。它不把交付简化成一次文本回答：每个任务都绑定具体的项目 revision 与模板版本，产物可以预览、下载、校验和按成员分享。
+Sourcewright 是一套面向代码项目交付的自托管工作流平台。导入源码、选择模板、配置模型与登录态后，系统生成可审查的项目文档、用户手册、HTML 页面和自动化截图。每个任务都绑定具体的项目 revision 与模板版本，产物可以预览、下载、校验和按成员分享。
 
 ## 核心能力
 
@@ -75,7 +75,7 @@ docker compose --env-file .env up --build
 
 | 地址 | 用途 |
 | --- | --- |
-| http://localhost:8088 | Agent Studio 工作台 |
+| http://localhost:8088 | Sourcewright 工作台 |
 | http://localhost:8080 | Platform API |
 | http://localhost:9001 | MinIO 控制台 |
 | http://localhost:8025 | Mailpit 本地邮件查看 |

@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Agent Studio API
+  title: Sourcewright API
   version: 0.1.0
   description: >-
     Task API contract. Authentication and authorization are implemented by platform-api.
