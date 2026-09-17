@@ -140,6 +140,7 @@ export const api = {
     return values.map(({ id, ...project }) => ({ ...project, projectId: id }))
   },
   tasks: () => request<Task[]>('/api/v1/tasks'),
+  task: (taskId: string) => request<Task>(`/api/v1/tasks/${taskId}`),
   templates: () => request<Template[]>('/api/v1/templates'),
   templateVersions: (templateId: string) => request<TemplateVersion[]>(`/api/v1/templates/${templateId}/versions`),
   async providers() {

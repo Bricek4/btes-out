@@ -49,6 +49,7 @@ import ConfigManagerModal from './components/ConfigManagerModal.vue'
 import { api, ApiError } from './lib/api'
 import type { Approval, ArtifactNode, Member, Project, ShareGrant, Task, TaskDraft, TaskEvent, Template, TemplateVersion, Provider, ProviderModel, LoginProfile, TaskStatus } from './types'
 import { initializeTemplateParameters, mergeTemplateParameters, templateFields as readTemplateFields, type TemplateFormField, type TemplateParameterValue } from './lib/template-form'
+import { isTerminalTaskStatus, mergeTaskSnapshot } from './lib/task-status'
 
 const activeSection = ref('overview')
 const sidebarCollapsed = ref(false)
@@ -117,9 +118,16 @@ const gitToken = ref('')
 const gitBranches = ref<string[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const MAX_IMPORT_BYTES = 100 * 1024 * 1024
+const TASK_POLL_INTERVAL_MS = 1200
 const blockingOverlay = computed(() => showLogin.value || showLaunch.value || showNewProject.value || showGitImport.value || Boolean(configMode.value) || showShare.value)
 const focusableSelector = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]'
 let focusBeforeDialog: HTMLElement | null = null
+let taskPollTimer: number | null = null
+let taskPollGeneration = 0
+let taskPollInFlight = false
+let taskListPollTimer: number | null = null
+let taskListPollGeneration = 0
+let taskListPollInFlight = false
 
 watch([showLogin, showLaunch, showNewProject, showGitImport, configMode, showShare], async () => {
   if (blockingOverlay.value) {
@@ -257,7 +265,13 @@ async function loadData(showSpinner = true) {
     }))
     if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].projectId
   }
-  if (taskResult.status === 'fulfilled') tasks.value = taskResult.value
+  if (taskResult.status === 'fulfilled') {
+    tasks.value = taskResult.value
+    if (selectedTask.value) {
+      const snapshot = taskResult.value.find((task) => task.taskId === selectedTask.value?.taskId)
+      if (snapshot) selectedTask.value = snapshot
+    }
+  }
   if (templateResult.status === 'fulfilled') {
     templates.value = templateResult.value
     if (!selectedTemplateVersionId.value) {
@@ -269,15 +283,13 @@ async function loadData(showSpinner = true) {
   if (profileResult.status === 'fulfilled') profiles.value = profileResult.value
   const failed = results.find((result) => result.status === 'rejected')
   if (failed?.status === 'rejected' && failed.reason instanceof ApiError && failed.reason.status === 401) {
-    api.clearSession()
-    sessionPresent.value = false
-    showLogin.value = true
-    errorMessage.value = '登录已失效，请重新连接工作区'
+    handleSessionExpired()
   } else if (failed?.status === 'rejected' && results.every((result) => result.status === 'rejected')) {
     errorMessage.value = '暂时无法连接 Platform API，请确认后端服务已启动'
   }
   refreshing.value = false
   loading.value = false
+  if (signedIn.value) startTaskListPolling()
 }
 
 async function login() {
@@ -339,6 +351,8 @@ async function registerAccount() {
 }
 
 async function logout() {
+  stopTaskPolling()
+  stopTaskListPolling()
   try {
     await api.logout()
   } finally {
@@ -412,6 +426,7 @@ async function launchTask() {
     taskIdempotencyKey.value = crypto.randomUUID()
     selectedTask.value = created
     await refreshTaskEvents(created)
+    startTaskPolling(created.taskId)
     notify('任务已进入队列')
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '任务创建失败'
@@ -420,23 +435,137 @@ async function launchTask() {
   }
 }
 
+function handleSessionExpired() {
+  stopTaskPolling()
+  stopTaskListPolling()
+  api.clearSession()
+  sessionPresent.value = false
+  showLogin.value = true
+  errorMessage.value = '登录已失效，请重新连接工作区'
+}
+
+function stopTaskPolling() {
+  taskPollGeneration += 1
+  if (taskPollTimer !== null) {
+    window.clearTimeout(taskPollTimer)
+    taskPollTimer = null
+  }
+}
+
+function applyTaskSnapshot(snapshot: Task) {
+  tasks.value = mergeTaskSnapshot(tasks.value, snapshot)
+  if (selectedTask.value?.taskId === snapshot.taskId) selectedTask.value = snapshot
+}
+
+function scheduleTaskPoll(taskId: string, generation: number) {
+  if (generation !== taskPollGeneration || selectedTask.value?.taskId !== taskId || isTerminalTaskStatus(selectedTask.value.status)) return
+  if (taskPollTimer !== null) window.clearTimeout(taskPollTimer)
+  taskPollTimer = window.setTimeout(() => {
+    taskPollTimer = null
+    void pollTask(taskId, generation)
+  }, TASK_POLL_INTERVAL_MS)
+}
+
+async function pollTask(taskId: string, generation: number) {
+  if (generation !== taskPollGeneration || selectedTask.value?.taskId !== taskId) return
+  if (taskPollInFlight) {
+    scheduleTaskPoll(taskId, generation)
+    return
+  }
+  taskPollInFlight = true
+  try {
+    const snapshot = await api.task(taskId)
+    if (generation !== taskPollGeneration || selectedTask.value?.taskId !== taskId) return
+    applyTaskSnapshot(snapshot)
+    await refreshTaskEvents(snapshot)
+    await refreshPendingApproval(snapshot)
+    if (isTerminalTaskStatus(snapshot.status)) await refreshTaskArtifacts(snapshot)
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) handleSessionExpired()
+  } finally {
+    taskPollInFlight = false
+    if (generation === taskPollGeneration && selectedTask.value?.taskId === taskId && !isTerminalTaskStatus(selectedTask.value.status)) {
+      scheduleTaskPoll(taskId, generation)
+    }
+  }
+}
+
+function startTaskPolling(taskId: string) {
+  stopTaskPolling()
+  const generation = taskPollGeneration
+  void pollTask(taskId, generation)
+}
+
+function stopTaskListPolling() {
+  taskListPollGeneration += 1
+  if (taskListPollTimer !== null) {
+    window.clearTimeout(taskListPollTimer)
+    taskListPollTimer = null
+  }
+}
+
+function scheduleTaskListPoll(generation: number) {
+  if (generation !== taskListPollGeneration || !signedIn.value) return
+  if (taskListPollTimer !== null) window.clearTimeout(taskListPollTimer)
+  taskListPollTimer = window.setTimeout(() => {
+    taskListPollTimer = null
+    void pollTaskList(generation)
+  }, TASK_POLL_INTERVAL_MS * 2)
+}
+
+async function pollTaskList(generation: number) {
+  if (generation !== taskListPollGeneration || !signedIn.value) return
+  if (taskListPollInFlight) {
+    scheduleTaskListPoll(generation)
+    return
+  }
+  taskListPollInFlight = true
+  try {
+    const latestTasks = await api.tasks()
+    if (generation !== taskListPollGeneration || !signedIn.value) return
+    tasks.value = latestTasks
+    const selected = selectedTask.value
+    if (selected) {
+      const snapshot = latestTasks.find((task) => task.taskId === selected.taskId)
+      if (snapshot) selectedTask.value = snapshot
+    }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) handleSessionExpired()
+  } finally {
+    taskListPollInFlight = false
+    if (generation === taskListPollGeneration && signedIn.value) scheduleTaskListPoll(generation)
+  }
+}
+
+function startTaskListPolling() {
+  stopTaskListPolling()
+  const generation = taskListPollGeneration
+  void pollTaskList(generation)
+}
+
 async function refreshTaskEvents(task: Task) {
   taskEventError.value = ''
   try {
-    selectedTaskEvents.value = await api.taskEvents(task.taskId)
+    const events = await api.taskEvents(task.taskId)
+    if (selectedTask.value?.taskId === task.taskId) selectedTaskEvents.value = events
   } catch (error) {
-    selectedTaskEvents.value = []
-    taskEventError.value = error instanceof ApiError ? error.message : '事件流读取失败'
+    if (selectedTask.value?.taskId === task.taskId) {
+      selectedTaskEvents.value = []
+      taskEventError.value = error instanceof ApiError ? error.message : '事件流读取失败'
+    }
   }
 }
 
 async function refreshTaskArtifacts(task: Task) {
   artifactError.value = ''
   try {
-    selectedTaskArtifacts.value = await api.taskArtifacts(task.taskId)
+    const artifacts = await api.taskArtifacts(task.taskId)
+    if (selectedTask.value?.taskId === task.taskId) selectedTaskArtifacts.value = artifacts
   } catch (error) {
-    selectedTaskArtifacts.value = []
-    artifactError.value = error instanceof ApiError ? error.message : '产物列表读取失败'
+    if (selectedTask.value?.taskId === task.taskId) {
+      selectedTaskArtifacts.value = []
+      artifactError.value = error instanceof ApiError ? error.message : '产物列表读取失败'
+    }
   }
 }
 
@@ -444,9 +573,10 @@ async function refreshPendingApproval(task: Task) {
   pendingApproval.value = null
   if (task.status !== 'WAITING_FOR_APPROVAL') return
   try {
-    pendingApproval.value = await api.pendingApproval(task.taskId)
+    const approval = await api.pendingApproval(task.taskId)
+    if (selectedTask.value?.taskId === task.taskId) pendingApproval.value = approval
   } catch (error) {
-    if (!(error instanceof ApiError && error.status === 404)) {
+    if (selectedTask.value?.taskId === task.taskId && !(error instanceof ApiError && error.status === 404)) {
       taskEventError.value = error instanceof ApiError ? error.message : '审批信息读取失败'
     }
   }
@@ -455,6 +585,7 @@ async function refreshPendingApproval(task: Task) {
 async function openTask(task: Task) {
   selectedTask.value = task
   await Promise.all([refreshTaskEvents(task), refreshTaskArtifacts(task), refreshPendingApproval(task)])
+  startTaskPolling(task.taskId)
 }
 
 async function decidePendingApproval(decision: string, text = 'approved') {
@@ -467,6 +598,7 @@ async function decidePendingApproval(decision: string, text = 'approved') {
     if (updated) {
       selectedTask.value = updated
       await Promise.all([refreshTaskEvents(updated), refreshTaskArtifacts(updated), refreshPendingApproval(updated)])
+      startTaskPolling(updated.taskId)
     }
     notify(decision.toLowerCase().startsWith('reject') ? '审批已拒绝' : '审批已提交')
   } catch (error) {
@@ -480,6 +612,8 @@ async function taskAction(task: Task, action: 'pause' | 'resume' | 'cancel') {
     tasks.value = tasks.value.map((item) => item.taskId === updated.taskId ? updated : item)
     if (selectedTask.value?.taskId === updated.taskId) selectedTask.value = updated
     await Promise.all([refreshTaskEvents(updated), refreshTaskArtifacts(updated)])
+    if (isTerminalTaskStatus(updated.status)) stopTaskPolling()
+    else if (selectedTask.value?.taskId === updated.taskId) startTaskPolling(updated.taskId)
     notify(action === 'pause' ? '任务已暂停' : action === 'resume' ? '任务已恢复' : '任务已取消')
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '任务操作失败'
@@ -802,6 +936,11 @@ async function revokeShare(grant: ShareGrant) {
 
 function selectSection(value: string) {
   activeSection.value = value
+  closeTaskInspector()
+}
+
+function closeTaskInspector() {
+  stopTaskPolling()
   selectedTask.value = null
 }
 
@@ -829,7 +968,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   else if (showGitImport.value) closeGitImport()
   else if (showNewProject.value) showNewProject.value = false
   else if (showLaunch.value) showLaunch.value = false
-  else if (selectedTask.value) selectedTask.value = null
+  else if (selectedTask.value) closeTaskInspector()
 }
 
 async function verifyEmailLink() {
@@ -854,7 +993,11 @@ onMounted(() => {
   verifyEmailLink().finally(() => loadData())
 })
 
-onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobalKeydown))
+onBeforeUnmount(() => {
+  stopTaskPolling()
+  stopTaskListPolling()
+  window.removeEventListener('keydown', handleGlobalKeydown)
+})
 </script>
 
 <template>
@@ -935,7 +1078,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobalKeydown)
     </main>
 
     <aside v-if="selectedTask" class="task-inspector" aria-label="任务详情">
-      <div class="task-inspector__head"><div class="task-inspector__title"><span class="task-inspector__type"><FileText v-if="selectedTask.type === 'PROJECT_DOCS'" :size="17" /><BookOpenCheck v-else-if="selectedTask.type === 'USER_GUIDE'" :size="17" /><Code2 v-else-if="selectedTask.type === 'HTML'" :size="17" /><ScanLine v-else :size="17" /></span><div><span class="section-head__eyebrow">TASK DETAIL</span><h3>{{ typeLabels[selectedTask.type] }}</h3></div></div><button class="icon-button" type="button" aria-label="关闭任务详情" @click="selectedTask = null"><X :size="18" /></button></div>
+      <div class="task-inspector__head"><div class="task-inspector__title"><span class="task-inspector__type"><FileText v-if="selectedTask.type === 'PROJECT_DOCS'" :size="17" /><BookOpenCheck v-else-if="selectedTask.type === 'USER_GUIDE'" :size="17" /><Code2 v-else-if="selectedTask.type === 'HTML'" :size="17" /><ScanLine v-else :size="17" /></span><div><span class="section-head__eyebrow">TASK DETAIL</span><h3>{{ typeLabels[selectedTask.type] }}</h3></div></div><button class="icon-button" type="button" aria-label="关闭任务详情" @click="closeTaskInspector"><X :size="18" /></button></div>
       <div class="task-inspector__status"><span class="status-pill" :class="`status-pill--${selectedTask.status.toLowerCase()}`"><Queue v-if="selectedTask.status === 'QUEUED'" :size="12" /><LoaderCircle v-else-if="selectedTask.status === 'RUNNING'" class="spin" :size="12" /><Pause v-else-if="selectedTask.status === 'PAUSED'" :size="12" /><CircleAlert v-else-if="selectedTask.status === 'WAITING_FOR_APPROVAL'" :size="12" /><CircleCheck v-else-if="selectedTask.status === 'SUCCEEDED'" :size="12" /><CircleX v-else-if="selectedTask.status === 'FAILED'" :size="12" /><Ban v-else :size="12" />{{ statusLabels[selectedTask.status] }}</span><span class="muted">{{ selectedTask.taskId.slice(0, 12) }}</span></div>
       <div class="inspector-actions"><button v-if="selectedTask.status === 'RUNNING'" class="button button--quiet" type="button" @click="taskAction(selectedTask, 'pause')"><Menu :size="15" />暂停</button><button v-if="selectedTask.status === 'PAUSED'" class="button button--quiet" type="button" @click="taskAction(selectedTask, 'resume')"><ArrowRight :size="15" />恢复</button><button v-if="['RUNNING', 'QUEUED', 'PAUSED', 'WAITING_FOR_APPROVAL'].includes(selectedTask.status)" class="button button--danger" type="button" @click="taskAction(selectedTask, 'cancel')"><X :size="15" />取消</button></div>
       <div v-if="selectedTask.status === 'WAITING_FOR_APPROVAL'" class="approval-box"><div class="approval-box__icon"><CircleAlert :size="17" /></div><div><strong>需要人工确认</strong><p>{{ pendingApproval?.prompt ?? '正在读取待确认内容…' }}</p><div v-if="pendingApproval?.choices?.length" class="approval-choices"><button v-for="choice in pendingApproval.choices" :key="choice" class="button button--quiet" type="button" @click="decidePendingApproval(choice, choice)">{{ choice }}</button></div><div class="approval-box__actions"><button v-if="pendingApproval && !pendingApproval.choices?.length" class="button button--primary" type="button" @click="decidePendingApproval('approve')"><Check :size="15" />确认继续</button><button v-if="pendingApproval && !pendingApproval.choices?.length" class="button button--danger" type="button" @click="decidePendingApproval('reject','rejected')">拒绝</button></div></div></div>

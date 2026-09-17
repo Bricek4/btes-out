@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
 /** Executes a task from short-lived Platform context and returns only registered artifact references. */
 public final class WorkerExecutionService implements WorkerTaskExecutor {
   private static final Logger LOG = LoggerFactory.getLogger(WorkerExecutionService.class);
-  private static final int MAX_ARCHIVE_ENTRIES = 500;
+  private static final int MAX_ARCHIVE_ENTRIES = 20_000;
   private static final int MAX_ENTRY_BYTES = 1_000_000;
   private static final int MAX_EVIDENCE_CHARS = 5_000_000;
   private static final Set<String> TEXT_EXTENSIONS = Set.of(

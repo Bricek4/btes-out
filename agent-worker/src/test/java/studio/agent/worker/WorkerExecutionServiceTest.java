@@ -2,6 +2,8 @@ package studio.agent.worker;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -10,6 +12,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
 import studio.agent.contracts.TaskStatus;
 import studio.agent.contracts.TaskType;
@@ -33,6 +37,20 @@ class WorkerExecutionServiceTest {
         platform.publishedKinds);
     assertTrue(platform.uploads.get(1).name().startsWith("docs/"));
     assertTrue(new String(platform.uploads.get(1).bytes(), StandardCharsets.UTF_8).contains("GET /users"));
+  }
+
+  @Test void accepts_a_realistic_archive_with_more_than_five_hundred_entries() throws Exception {
+    UUID taskId = UUID.randomUUID();
+    var platform = new RecordingPlatform(context(taskId, TaskType.PROJECT_DOCS,
+        Map.of("title", "Large project", "outputPath", "docs/README.md"), null),
+        archiveWithEntries(501));
+    var service = new WorkerExecutionService(platform, new RecordingBrowser(),
+        provider -> prompt -> "## Generated\nThe source was inspected.");
+
+    var result = service.execute(request(taskId, TaskType.PROJECT_DOCS));
+
+    assertEquals(TaskStatus.SUCCEEDED, result.completion().status());
+    assertEquals("artifact://docs/" + platform.primaryArtifactId, result.artifactReference());
   }
 
   @Test void generatesSanitizesAndPublishesStandaloneHtmlAndManifest() {
@@ -143,6 +161,18 @@ class WorkerExecutionServiceTest {
         parameters, UUID.randomUUID(), "deepseek-chat", Set.of("admin"), baseUrl);
   }
 
+  private static byte[] archiveWithEntries(int count) throws IOException {
+    var bytes = new ByteArrayOutputStream();
+    try (var zip = new ZipOutputStream(bytes)) {
+      for (int index = 0; index < count; index++) {
+        zip.putNextEntry(new ZipEntry("src/File" + index + ".java"));
+        zip.write(("class File" + index + " {}").getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
+      }
+    }
+    return bytes.toByteArray();
+  }
+
   private static final class RecordingPlatform implements AgentPlatformGateway {
     private final AgentTaskContext context;
     private final byte[] source;
@@ -152,8 +182,11 @@ class WorkerExecutionServiceTest {
     private final UUID primaryArtifactId = UUID.randomUUID();
     private int published;
     RecordingPlatform(AgentTaskContext context, String source) {
+      this(context, source.getBytes(StandardCharsets.UTF_8));
+    }
+    RecordingPlatform(AgentTaskContext context, byte[] source) {
       this.context = context;
-      this.source = source.getBytes(StandardCharsets.UTF_8);
+      this.source = source.clone();
     }
     public AgentTaskContext context(UUID taskId) { return context; }
     public ProviderConnection provider(UUID taskId) {
