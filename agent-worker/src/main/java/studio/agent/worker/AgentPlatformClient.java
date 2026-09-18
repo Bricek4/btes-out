@@ -185,6 +185,26 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
         .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().toBodilessEntity();
   }
 
+  private void postInternalWithRetry(String path, Object body) {
+    RuntimeException last = null;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        postInternal(path, body);
+        return;
+      } catch (RuntimeException failure) {
+        last = failure;
+        if (attempt == 2) break;
+        try {
+          Thread.sleep(150L * (attempt + 1));
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new PlatformOperationException("SOURCE_READ_CHECKPOINT_INTERRUPTED");
+        }
+      }
+    }
+    throw last == null ? new PlatformOperationException("SOURCE_READ_CHECKPOINT_UNAVAILABLE") : last;
+  }
+
   private static final class HttpSourceReadCheckpoint implements SourceReadCheckpoint {
     private final AgentPlatformClient client;
     private final UUID taskId;
@@ -204,13 +224,13 @@ public final class AgentPlatformClient implements AgentPlatformGateway {
     }
 
     @Override public void complete(SourceReadChunk chunk, String summary) {
-      client.postInternal(base() + "/chunks/" + chunk.chunkId() + "/complete",
+      client.postInternalWithRetry(base() + "/chunks/" + chunk.chunkId() + "/complete",
           Map.of("status", "ANALYZED", "summary", summary));
       completed.put(chunk.chunkId(), summary);
     }
 
     @Override public void fail(SourceReadChunk chunk, String code) {
-      client.postInternal(base() + "/chunks/" + chunk.chunkId() + "/complete",
+      client.postInternalWithRetry(base() + "/chunks/" + chunk.chunkId() + "/complete",
           Map.of("status", "FAILED", "failureCode", code));
     }
 
